@@ -25,7 +25,7 @@ kernel/       the kernel, with its own GNUmakefile and subprojects/
 base-files/   files added to the Void userland
 boot/         Limine boot menus for x86_64 and aarch64
 tools/        image and sysroot builders, hardware report
-testsuites/   kernel boot tests and the ACPI model test
+testsuites/   kernel boot tests, the ACPI model test and a C++ POSIX suite
 utils/        small programs for Tunix images, such as the CI boot init
 ci/           the scripts CI runs, each one runnable locally
 docs/         kernel documentation

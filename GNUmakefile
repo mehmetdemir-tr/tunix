@@ -275,6 +275,13 @@ test: $(KERNEL) $(LIMINE_EXE)
 test-aarch64: $(AARCH64_CORE_IMAGE)
 	ARCH=aarch64 KERNEL=$(AARCH64_CORE_IMAGE) LIMINE=$(LIMINE_DIR) testsuites/kernel-tests/run.sh $(TESTS)
 
+.PHONY: posix-test posix-test-aarch64
+posix-test: $(KERNEL) $(LIMINE_EXE)
+	KERNEL=$(KERNEL) LIMINE=$(LIMINE_DIR) testsuites/posix-tests/run.sh
+
+posix-test-aarch64: $(AARCH64_CORE_IMAGE)
+	ARCH=aarch64 KERNEL=$(AARCH64_CORE_IMAGE) LIMINE=$(LIMINE_DIR) testsuites/posix-tests/run.sh
+
 .PHONY: ci-boot ci-boot-aarch64
 ci-boot: $(KERNEL) $(LIMINE_EXE)
 	KERNEL=$(KERNEL) LIMINE=$(LIMINE_DIR) ci/boot.sh
@@ -284,7 +291,7 @@ ci-boot-aarch64: $(AARCH64_CORE_IMAGE)
 
 CLANG_FORMAT ?= clang-format
 FORMAT_SOURCES := $(shell find kernel testsuites utils -path kernel/subprojects -prune -o \
-	-path $(KERNEL_BUILD) -prune -o -name '*.[ch]' -print)
+	-path $(KERNEL_BUILD) -prune -o \( -name '*.[ch]' -o -name '*.[ch]pp' \) -print)
 
 .PHONY: format format-check
 format:

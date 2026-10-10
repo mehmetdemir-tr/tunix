@@ -20,3 +20,4 @@ ReflowComments: false
 SortIncludes: Never
 IncludeBlocks: Preserve
 SpaceBeforeParens: ControlStatements
+FixNamespaceComments: false
