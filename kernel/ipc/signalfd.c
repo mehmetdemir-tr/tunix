@@ -60,7 +60,7 @@ void signalfd_set_mask(struct signalfd_context *context, uint64_t mask) {
 static uint64_t available_signals(struct signalfd_context *context) {
     struct process *process = process_poll_subject();
     if (!context || !process) return 0;
-    uint64_t undeliverable = signal_bit(9) | signal_bit(19);
+    uint64_t undeliverable = signal_bit(SIGKILL) | signal_bit(SIGSTOP);
     return __atomic_load_n(&process->signal_pending, __ATOMIC_ACQUIRE) & context->mask &
         ~undeliverable;
 }
@@ -72,32 +72,43 @@ int signalfd_read_ready(struct signalfd_context *context) {
 int64_t signalfd_read(struct signalfd_context *context, size_t size, void *buffer) {
     if (!context || !buffer) return -EINVAL;
     if (size < sizeof(struct signalfd_siginfo)) return -EINVAL;
-
-    struct process *process = process_current();
-    if (!process) return -EINVAL;
+    if (!process_current()) return -EINVAL;
 
     size_t capacity = size / sizeof(struct signalfd_siginfo);
     struct signalfd_siginfo *out = (struct signalfd_siginfo *)buffer;
+    uint64_t wanted = context->mask & ~(signal_bit(SIGKILL) | signal_bit(SIGSTOP));
     size_t produced = 0;
 
-    for (int signal_number = 1; signal_number <= TUNIX_NSIG && produced < capacity;
-         signal_number++) {
-        uint64_t bit = signal_bit(signal_number);
-        if (!(available_signals(context) & bit)) continue;
-
-        __atomic_fetch_and(&process->signal_pending, ~bit, __ATOMIC_ACQ_REL);
-        memset(&out[produced], 0, sizeof(out[produced]));
-        out[produced].ssi_signo = (uint32_t)signal_number;
-
-        if (process->signal_user_sent & bit) {
-            out[produced].ssi_pid = process->signal_sender_pid[signal_number - 1];
-            out[produced].ssi_uid = process->signal_sender_uid[signal_number - 1];
-            out[produced].ssi_code = process->signal_sender_code[signal_number - 1];
-            process->signal_user_sent &= ~bit;
-            process->signal_sender_pid[signal_number - 1] = 0;
-            process->signal_sender_uid[signal_number - 1] = 0;
+    while (produced < capacity) {
+        struct signal_info info;
+        if (!process_take_signal(wanted, &info)) break;
+        struct signalfd_siginfo *entry = &out[produced++];
+        memset(entry, 0, sizeof(*entry));
+        entry->ssi_signo = (uint32_t)info.signo;
+        entry->ssi_errno = info.error;
+        entry->ssi_code = info.code;
+        int kernel_code = info.code > 0 && info.code != SI_KERNEL;
+        if (info.code == SI_TIMER) {
+            entry->ssi_tid = (uint32_t)info.fields.timer.id;
+            entry->ssi_overrun = (uint32_t)info.fields.timer.overrun;
+            entry->ssi_int = (int32_t)info.fields.timer.value;
+            entry->ssi_ptr = info.fields.timer.value;
+        } else if (kernel_code && info.signo == SIGCHLD) {
+            entry->ssi_pid = (uint32_t)info.fields.child.pid;
+            entry->ssi_uid = info.fields.child.uid;
+            entry->ssi_status = info.fields.child.status;
+            entry->ssi_utime = (uint64_t)info.fields.child.utime;
+            entry->ssi_stime = (uint64_t)info.fields.child.stime;
+        } else if (kernel_code &&
+                   (info.signo == SIGSEGV || info.signo == SIGBUS || info.signo == SIGILL ||
+                    info.signo == SIGFPE || info.signo == SIGTRAP)) {
+            entry->ssi_addr = info.fields.fault.address;
+        } else {
+            entry->ssi_pid = (uint32_t)info.fields.sender.pid;
+            entry->ssi_uid = info.fields.sender.uid;
+            entry->ssi_int = (int32_t)info.fields.sender.value;
+            entry->ssi_ptr = info.fields.sender.value;
         }
-        produced++;
     }
 
     if (!produced) return -EAGAIN;

@@ -30,8 +30,6 @@ extern void panic(const char *message) __attribute__((noreturn));
 #define FSC_PERMISSION  0x0CU
 #define ESR_WNR         (1U << 6)
 
-#define SIGTRAP 5
-
 static void relocate_user_frame(struct interrupt_frame *frame) {
     if (!arch_interrupt_from_user(frame)) return;
     uint64_t top = cpu_current()->kernel_rsp;
@@ -76,11 +74,37 @@ static void user_fault(struct interrupt_frame *frame, uint64_t esr, uint64_t far
             return;
     }
 
-    int signal_number = user_fault_signal(class);
+    struct process_fault fault = {user_fault_signal(class), SI_KERNEL, 0, 0, (uint32_t)esr};
+    switch (class) {
+    case EC_DABT_LOW:
+    case EC_IABT_LOW:
+        fault.code = ((uint32_t)esr & FSC_TYPE_MASK) == FSC_PERMISSION ? SEGV_ACCERR : SEGV_MAPERR;
+        fault.address = far;
+        break;
+    case EC_PC_ALIGN:
+    case EC_SP_ALIGN:
+        fault.code = BUS_ADRALN;
+        fault.address = class == EC_PC_ALIGN ? far : frame->sp_el0;
+        break;
+    case EC_FP_EXCEPTION:
+        fault.code = FPE_FLTINV;
+        fault.address = frame->elr;
+        break;
+    case EC_BRK64:
+        fault.code = TRAP_BRKPT;
+        fault.address = frame->elr;
+        break;
+    case EC_UNKNOWN:
+    case EC_SYS64:
+        fault.code = ILL_ILLOPN;
+        fault.address = frame->elr;
+        break;
+    default: break;
+    }
     struct process *faulted = process_current();
     kprintf("fault: %s[%d] class %x at %p addr %p (esr %p)\n", faulted ? faulted->name : "?",
             (int)process_current_pid(), class, (void *)frame->elr, (void *)far, (void *)esr);
-    if (process_fault_from_interrupt(frame, signal_number)) return;
+    if (process_fault_from_interrupt(frame, &fault)) return;
     panic("unhandled user exception");
 }
 

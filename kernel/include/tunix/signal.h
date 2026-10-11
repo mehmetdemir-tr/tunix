@@ -7,37 +7,92 @@
 #define SIG_DFL    0ULL
 #define SIG_IGN    1ULL
 
-#define SIGHUP  1
-#define SIGINT  2
-#define SIGQUIT 3
-#define SIGILL  4
-#define SIGBUS  7
-#define SIGFPE  8
-#define SIGKILL 9
-#define SIGUSR1 10
-#define SIGSEGV 11
-#define SIGPIPE 13
-#define SIGALRM 14
-#define SIGTERM 15
-#define SIGCHLD 17
-#define SIGCONT 18
-#define SIGSTOP 19
-#define SIGTSTP 20
-#define SIGTTIN 21
-#define SIGTTOU 22
+#define SIGHUP   1
+#define SIGINT   2
+#define SIGQUIT  3
+#define SIGILL   4
+#define SIGTRAP  5
+#define SIGABRT  6
+#define SIGBUS   7
+#define SIGFPE   8
+#define SIGKILL  9
+#define SIGUSR1  10
+#define SIGSEGV  11
+#define SIGPIPE  13
+#define SIGALRM  14
+#define SIGTERM  15
+#define SIGCHLD  17
+#define SIGCONT  18
+#define SIGSTOP  19
+#define SIGTSTP  20
+#define SIGTTIN  21
+#define SIGTTOU  22
+#define SIGURG   23
+#define SIGWINCH 28
+#define SIGSYS   31
+#define SIGRTMIN 32
 
 #define SIG_BLOCK   0
 #define SIG_UNBLOCK 1
 #define SIG_SETMASK 2
 
-#define SA_SIGINFO  0x00000004ULL
-#define SA_RESTORER 0x04000000ULL
-#define SA_ONSTACK  0x08000000ULL
-#define SA_RESTART  0x10000000ULL
+#define SA_NOCLDSTOP 0x00000001ULL
+#define SA_SIGINFO   0x00000004ULL
+#define SA_RESTORER  0x04000000ULL
+#define SA_ONSTACK   0x08000000ULL
+#define SA_RESTART   0x10000000ULL
 
 #define SI_USER   0
 #define SI_KERNEL 0x80
+#define SI_QUEUE  (-1)
+#define SI_TIMER  (-2)
 #define SI_TKILL  (-6)
+
+#define CLD_EXITED    1
+#define CLD_KILLED    2
+#define CLD_STOPPED   5
+#define CLD_CONTINUED 6
+
+#define SEGV_MAPERR 1
+#define SEGV_ACCERR 2
+#define BUS_ADRALN  1
+#define ILL_ILLOPN  2
+#define FPE_INTDIV  1
+#define FPE_FLTINV  7
+#define TRAP_BRKPT  1
+
+struct signal_info {
+    int32_t signo;
+    int32_t error;
+    int32_t code;
+    int32_t reserved;
+    union {
+        struct {
+            int32_t pid;
+            uint32_t uid;
+            uint64_t value;
+        } sender;
+        struct {
+            int32_t id;
+            int32_t overrun;
+            uint64_t value;
+        } timer;
+        struct {
+            int32_t pid;
+            uint32_t uid;
+            int32_t status;
+            int32_t reserved;
+            int64_t utime;
+            int64_t stime;
+        } child;
+        struct {
+            uint64_t address;
+        } fault;
+        uint8_t bytes[32];
+    } fields;
+};
+
+_Static_assert(sizeof(struct signal_info) == 48U, "siginfo prefix size mismatch");
 
 #define SIGNAL_SIGINFO_SIZE 128
 #if defined(__x86_64__)

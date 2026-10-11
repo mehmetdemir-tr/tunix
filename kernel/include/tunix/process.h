@@ -14,19 +14,20 @@
 #include <tunix/signal.h>
 #include <tunix/syscall.h>
 
-#define PROCESS_NR_OPEN        1048576
-#define PROCESS_RLIMITS        16
-#define PROCESS_RLIM_INFINITY  UINT64_MAX
-#define PROCESS_RLIMIT_STACK   3
-#define PROCESS_RLIMIT_NOFILE  7
-#define PROCESS_FD_CAPACITY(p) ((p)->files ? (p)->files->capacity : 0)
-#define PROCESS_FD_CLOEXEC     1U
-#define PROCESS_READY          0
-#define PROCESS_RUNNING        1
-#define PROCESS_BLOCKED        2
-#define PROCESS_ZOMBIE         3
-#define PROCESS_DEAD           4
-#define PROCESS_STOPPED        5
+#define PROCESS_NR_OPEN           1048576
+#define PROCESS_RLIMITS           16
+#define PROCESS_RLIM_INFINITY     UINT64_MAX
+#define PROCESS_RLIMIT_STACK      3
+#define PROCESS_RLIMIT_NOFILE     7
+#define PROCESS_RLIMIT_SIGPENDING 11
+#define PROCESS_FD_CAPACITY(p)    ((p)->files ? (p)->files->capacity : 0)
+#define PROCESS_FD_CLOEXEC        1U
+#define PROCESS_READY             0
+#define PROCESS_RUNNING           1
+#define PROCESS_BLOCKED           2
+#define PROCESS_ZOMBIE            3
+#define PROCESS_DEAD              4
+#define PROCESS_STOPPED           5
 
 #define WNOHANG      1
 #define WUNTRACED    2
@@ -85,6 +86,18 @@ struct process_rlimit {
 
 #define PROCESS_FPU_STATE_SIZE 2560
 
+struct posix_timer;
+
+struct signal_entry {
+    struct signal_entry *next;
+    struct posix_timer *timer;
+    uint8_t allocated;
+    uint8_t queued;
+    uint8_t trap_number;
+    uint32_t trap_error;
+    struct signal_info info;
+};
+
 struct process {
     struct cgroup *cgroups[CGROUP_HIERARCHIES];
     uint64_t pid;
@@ -132,6 +145,7 @@ struct process {
     uint64_t timerslack_ns;
     uint64_t start_time_ns;
     uint64_t runtime_ns;
+    uint64_t exited_threads_runtime_ns;
     uint64_t last_scheduled_ns;
     uint64_t virtual_runtime_ns;
     uint32_t time_slice_ticks;
@@ -179,10 +193,10 @@ struct process {
     uint64_t itimer_real_deadline_ns;
 
     uint64_t signal_pending;
-    uint64_t signal_user_sent;
-    uint32_t signal_sender_pid[TUNIX_NSIG];
-    uint32_t signal_sender_uid[TUNIX_NSIG];
-    int8_t signal_sender_code[TUNIX_NSIG];
+    struct signal_entry *signal_queue;
+    struct signal_entry *signal_queue_tail;
+    uint64_t signal_queued;
+    struct signal_entry signal_slots[SIGRTMIN - 1];
     uint64_t signal_blocked;
     uint64_t signal_saved_mask;
     uint64_t signal_wait_mask_saved;
@@ -238,6 +252,7 @@ struct process {
     uint32_t sched_depth;
     uint8_t kernel_suspended;
     uint8_t kernel_waiting;
+    uint8_t kernel_wait_interruptible;
     uint8_t is_kthread;
     struct defer_park defer_park;
     struct file_pins pins;
@@ -309,7 +324,15 @@ int process_grow_user_stack(uint64_t fault_address);
 int process_handle_cow_fault(uint64_t fault_address);
 void process_enable_extended_fpu(void);
 int process_signal_has_handler(int signal_number);
-int process_fault_from_interrupt(struct interrupt_frame *frame, int signal_number);
+struct process_fault {
+    int signal;
+    int code;
+    uint64_t address;
+    uint32_t trap;
+    uint32_t error;
+};
+
+int process_fault_from_interrupt(struct interrupt_frame *frame, const struct process_fault *fault);
 void process_run_child_first_from_syscall(struct syscall_frame *frame, uint64_t child_pid);
 void process_reap_deferred(void);
 void process_io_recheck(void);
@@ -373,10 +396,17 @@ int process_sleep_on(struct syscall_frame *frame, const void *channel);
 void process_prepare_wait(const void *channel, uint64_t deadline_ns);
 void process_wait(void);
 void process_finish_wait(void);
+int process_prepare_wait_interruptible(const void *channel, uint64_t deadline_ns);
+int process_wait_interrupted(void);
 int process_may_sleep(void);
 void process_preempt_point(void);
-int process_take_signal(uint64_t set, int32_t *info);
+int process_take_signal(uint64_t set, struct signal_info *info);
 int64_t process_send_thread_signal(int64_t tgid, int64_t tid, int signal_number);
+int64_t process_send_thread_signal_info(int64_t tgid, int64_t tid, struct signal_info *info);
+int process_send_signal_info(int64_t pid, struct signal_info *info);
+int process_queue_signal_entry_locked(struct process *target, struct signal_entry *entry);
+void process_unqueue_signal_entry_locked(struct process *target, struct signal_entry *entry);
+uint64_t process_cpu_time_locked(struct process *target, int thread);
 int64_t process_futex_lock_pi(struct syscall_frame *frame, uint64_t address, int64_t deadline_ns,
                               int trylock, int shared, uint64_t syscall_number);
 int64_t process_futex_unlock_pi(uint64_t address, int shared);

@@ -54,15 +54,42 @@ const char *exception_messages[] = {"Division By Zero",
                                     "Security",
                                     "Reserved"};
 
-static int fault_signal(uint64_t vector) {
-    switch (vector) {
-    case 0:  return SIGFPE;
-    case 6:  return SIGILL;
+static struct process_fault user_fault(const struct interrupt_frame *regs, uint64_t address) {
+    struct process_fault fault = {SIGSEGV, SI_KERNEL, 0, (uint32_t)regs->int_no,
+                                  (uint32_t)regs->err_code};
+    switch (regs->int_no) {
+    case 0:
+        fault.signal = SIGFPE;
+        fault.code = FPE_INTDIV;
+        fault.address = regs->rip;
+        break;
+    case 1:
+    case 3:
+        fault.signal = SIGTRAP;
+        fault.code = regs->int_no == 3 ? SI_KERNEL : TRAP_BRKPT;
+        break;
+    case 6:
+        fault.signal = SIGILL;
+        fault.code = ILL_ILLOPN;
+        fault.address = regs->rip;
+        break;
+    case 14:
+        fault.code = (regs->err_code & 1U) ? SEGV_ACCERR : SEGV_MAPERR;
+        fault.address = address;
+        break;
     case 16:
-    case 19: return SIGFPE;
-    case 17: return SIGBUS;
-    default: return SIGSEGV;
+    case 19:
+        fault.signal = SIGFPE;
+        fault.code = FPE_FLTINV;
+        fault.address = regs->rip;
+        break;
+    case 17:
+        fault.signal = SIGBUS;
+        fault.code = BUS_ADRALN;
+        break;
+    default: break;
     }
+    return fault;
 }
 
 static void interrupt_acknowledge(unsigned vector) {
@@ -129,8 +156,8 @@ static void isr_dispatch(struct interrupt_frame *regs) {
             return;
         }
 
-        if (process_signal_has_handler(fault_signal(regs->int_no)) &&
-            process_fault_from_interrupt(regs, fault_signal(regs->int_no)))
+        struct process_fault fault = user_fault(regs, fault_address);
+        if (process_signal_has_handler(fault.signal) && process_fault_from_interrupt(regs, &fault))
             return;
 
         struct process *faulted = process_current();
@@ -210,7 +237,7 @@ static void isr_dispatch(struct interrupt_frame *regs) {
             }
         }
 
-        if (process_fault_from_interrupt(regs, fault_signal(regs->int_no))) return;
+        if (process_fault_from_interrupt(regs, &fault)) return;
 
         kprintf("Exception: %s\n", exception_messages[regs->int_no]);
         kprintf("Error Code: %x  CS: %x\n", (unsigned)fault_error, (unsigned)fault_cs);

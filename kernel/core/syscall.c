@@ -25,6 +25,7 @@
 #include <tunix/pipe.h>
 #include <tunix/pty.h>
 #include <tunix/pmm.h>
+#include <tunix/posix_timer.h>
 #include <tunix/power.h>
 #include <tunix/process.h>
 #include <tunix/random.h>
@@ -240,6 +241,13 @@ _Static_assert(offsetof(struct syscall_frame, user_rsp) == 136,
 #define SYS_RT_SIGPENDING          127
 #define SYS_RT_SIGTIMEDWAIT        128
 #define SYS_RT_SIGSUSPEND          130
+#define SYS_RT_SIGQUEUEINFO        129
+#define SYS_RT_TGSIGQUEUEINFO      297
+#define SYS_TIMER_CREATE           222
+#define SYS_TIMER_SETTIME          223
+#define SYS_TIMER_GETTIME          224
+#define SYS_TIMER_GETOVERRUN       225
+#define SYS_TIMER_DELETE           226
 #define SYS_ARCH_PRCTL             158
 #define SYS_PRCTL                  157
 #define SYS_GETTID                 186
@@ -541,6 +549,7 @@ struct linux_clone_args {
 #define EDESTADDRREQ    89
 #define ENOTSOCK        88
 #define EINPROGRESS     115
+#define ERESTARTSYS     512
 
 #define FUTEX_WAIT 0
 #define FUTEX_WAKE 1
@@ -4682,30 +4691,129 @@ static int64_t sys_uname(uint64_t user_buffer) {
     return copy_to_user(user_buffer, &value, sizeof(value)) == 0 ? 0 : -EFAULT;
 }
 
-#define CLOCK_REALTIME         0
-#define CLOCK_MONOTONIC        1
-#define CLOCK_MONOTONIC_RAW    4
-#define CLOCK_REALTIME_COARSE  5
-#define CLOCK_MONOTONIC_COARSE 6
-#define CLOCK_BOOTTIME         7
-
 #define GRND_NONBLOCK 0x0001U
 #define GRND_RANDOM   0x0002U
 #define GRND_INSECURE 0x0004U
 
+static struct linux_timespec timespec_of(uint64_t ns) {
+    struct linux_timespec value = {(int64_t)(ns / 1000000000ULL), (int64_t)(ns % 1000000000ULL)};
+    return value;
+}
+
+static int read_timespec_ns(uint64_t user_time, uint64_t *ns) {
+    struct linux_timespec value;
+    if (copy_from_user(&value, user_time, sizeof(value)) != 0) return -EFAULT;
+    if (value.tv_sec < 0 || value.tv_nsec < 0 || value.tv_nsec >= 1000000000LL) return -EINVAL;
+    if ((uint64_t)value.tv_sec > (UINT64_MAX - 999999999ULL) / 1000000000ULL) *ns = UINT64_MAX;
+    else *ns = (uint64_t)value.tv_sec * 1000000000ULL + (uint64_t)value.tv_nsec;
+    return 0;
+}
+
 static int64_t sys_clock_gettime(int clock_id, uint64_t user_time) {
     uint64_t now;
-    switch (clock_id) {
-    case CLOCK_REALTIME:
-    case CLOCK_REALTIME_COARSE:  now = time_realtime_ns(); break;
-    case CLOCK_MONOTONIC:
-    case CLOCK_MONOTONIC_RAW:
-    case CLOCK_MONOTONIC_COARSE:
-    case CLOCK_BOOTTIME:         now = time_uptime_ns(); break;
-    default:                     return -EINVAL;
-    }
-    struct linux_timespec value = {(int64_t)(now / 1000000000ULL), (int64_t)(now % 1000000000ULL)};
+    int status = posix_clock_read(clock_id, &now);
+    if (status != 0) return status;
+    struct linux_timespec value = timespec_of(now);
     return copy_to_user(user_time, &value, sizeof(value)) == 0 ? 0 : -EFAULT;
+}
+
+static int64_t sys_clock_getres(int clock_id, uint64_t user_resolution) {
+    uint64_t resolution;
+    int status = posix_clock_resolution(clock_id, &resolution);
+    if (status != 0) return status;
+    struct linux_timespec value = timespec_of(resolution);
+    if (user_resolution && copy_to_user(user_resolution, &value, sizeof(value)) != 0)
+        return -EFAULT;
+    return 0;
+}
+
+struct linux_sigevent_head {
+    uint64_t value;
+    int32_t signo;
+    int32_t notify;
+    int32_t thread;
+};
+
+static int64_t sys_timer_create(int clock_id, uint64_t user_event, uint64_t user_id) {
+    struct posix_timer_event event;
+    if (user_event) {
+        struct linux_sigevent_head head;
+        if (copy_from_user(&head, user_event, sizeof(head)) != 0) return -EFAULT;
+        event.value = head.value;
+        event.signo = head.signo;
+        event.notify = head.notify;
+        event.thread = head.thread;
+    }
+    int32_t id;
+    int status = posix_timer_create(clock_id, user_event ? &event : NULL, &id);
+    if (status != 0) return status;
+    if (copy_to_user(user_id, &id, sizeof(id)) != 0) {
+        (void)posix_timer_delete(id);
+        return -EFAULT;
+    }
+    return 0;
+}
+
+static int64_t write_timer_spec(uint64_t user_spec, const struct posix_timer_spec *spec) {
+    struct linux_timespec value[2] = {timespec_of(spec->interval_ns), timespec_of(spec->value_ns)};
+    return copy_to_user(user_spec, value, sizeof(value)) == 0 ? 0 : -EFAULT;
+}
+
+static int64_t sys_timer_settime(int32_t id, int flags, uint64_t user_new, uint64_t user_old) {
+    if (!user_new) return -EFAULT;
+    struct posix_timer_spec spec;
+    int status = read_timespec_ns(user_new, &spec.interval_ns);
+    if (status == 0)
+        status = read_timespec_ns(user_new + sizeof(struct linux_timespec), &spec.value_ns);
+    if (status != 0) return status;
+    struct posix_timer_spec old;
+    status = posix_timer_settime(id, flags, &spec, user_old ? &old : NULL);
+    if (status != 0) return status;
+    return user_old ? write_timer_spec(user_old, &old) : 0;
+}
+
+static int64_t sys_timer_gettime(int32_t id, uint64_t user_value) {
+    struct posix_timer_spec spec;
+    int status = posix_timer_gettime(id, &spec);
+    if (status != 0) return status;
+    return write_timer_spec(user_value, &spec);
+}
+
+static int copy_queued_info(uint64_t user_info, int signal_number, int to_self,
+                            int signal_number_overrides, struct signal_info *info) {
+    if (copy_from_user(info, user_info, sizeof(*info)) != 0) return -EFAULT;
+    if ((info->code >= 0 || info->code == SI_TKILL) && !to_self) return -EPERM;
+    if (info->signo != signal_number && !signal_number_overrides) return -EINVAL;
+    info->signo = signal_number;
+    return 0;
+}
+
+static int64_t sys_rt_sigqueueinfo(int64_t pid, int signal_number, uint64_t user_info) {
+    struct process *self = process_current();
+    if (!self || signal_number < 0 || signal_number > TUNIX_NSIG) return -EINVAL;
+    struct signal_info info;
+    int status = copy_queued_info(user_info, signal_number, pid == (int64_t)self->tgid, 1, &info);
+    if (status != 0) return status;
+    if (pid <= 0) return -ESRCH;
+    return process_send_signal_info(pid, &info);
+}
+
+static int64_t sys_rt_tgsigqueueinfo(int64_t tgid, int64_t tid, int signal_number,
+                                     uint64_t user_info) {
+    struct process *self = process_current();
+    if (!self || tgid <= 0 || tid <= 0 || signal_number < 0 || signal_number > TUNIX_NSIG)
+        return -EINVAL;
+    struct signal_info info;
+    int status = copy_queued_info(user_info, signal_number, tid == (int64_t)self->pid, 1, &info);
+    if (status != 0) return status;
+    return process_send_thread_signal_info(tgid, tid, &info);
+}
+
+static int64_t write_signal_info(uint64_t user_info, const struct signal_info *info) {
+    uint8_t bytes[SIGNAL_SIGINFO_SIZE];
+    memset(bytes, 0, sizeof(bytes));
+    memcpy(bytes, info, sizeof(*info));
+    return copy_to_user(user_info, bytes, sizeof(bytes)) == 0 ? 0 : -EFAULT;
 }
 
 static int64_t sys_gettimeofday(uint64_t user_time) {
@@ -5731,11 +5839,17 @@ static int64_t sys_pidfd_open(int64_t pid, uint32_t flags) {
 
 static int64_t sys_pidfd_send_signal(int fd, int signal_number, uint64_t user_info,
                                      uint32_t flags) {
-    if (flags || user_info) return -EINVAL;
+    if (flags) return -EINVAL;
     struct file *file = file_from_fd(fd);
     if (!file || file->kind != FILE_KIND_PIDFD) return -EBADF;
     if (process_pidfd_exited(file->pidfd_pid, file->pidfd_start_ns)) return -ESRCH;
-    return process_send_signal_checked((int64_t)file->pidfd_pid, signal_number);
+    if (!user_info) return process_send_signal_checked((int64_t)file->pidfd_pid, signal_number);
+    if (signal_number < 0 || signal_number > TUNIX_NSIG) return -EINVAL;
+    struct signal_info info;
+    int status = copy_queued_info(user_info, signal_number,
+                                  file->pidfd_pid == process_current()->tgid, 0, &info);
+    if (status != 0) return status;
+    return process_send_signal_info((int64_t)file->pidfd_pid, &info);
 }
 
 static void syscall_run(struct syscall_frame *frame) {
@@ -5862,8 +5976,10 @@ static void syscall_run(struct syscall_frame *frame) {
                                       SYSCALL_ARG2(frame), SYSCALL_ARG3(frame));
         break;
     case SYS_RT_SIGRETURN:
-        if (process_sigreturn(frame) != 0) SYSCALL_RET(frame) = (uint64_t)-(int64_t)EINVAL;
-        skip_signal_delivery = 1;
+        if (process_sigreturn(frame) != 0) {
+            SYSCALL_RET(frame) = (uint64_t)-(int64_t)EINVAL;
+            skip_signal_delivery = 1;
+        }
         break;
     case SYS_IOCTL: {
         int fd = (int)SYSCALL_ARG0(frame);
@@ -6896,14 +7012,39 @@ static void syscall_run(struct syscall_frame *frame) {
         SYSCALL_RET(frame) =
             (uint64_t)sys_clock_gettime((int)SYSCALL_ARG0(frame), SYSCALL_ARG1(frame));
         break;
-    case SYS_CLOCK_GETRES: {
-        struct linux_timespec value = {0, 1000000};
+    case SYS_CLOCK_GETRES:
         SYSCALL_RET(frame) =
-            SYSCALL_ARG1(frame) && copy_to_user(SYSCALL_ARG1(frame), &value, sizeof(value)) != 0
-            ? (uint64_t)-(int64_t)EFAULT
-            : 0;
+            (uint64_t)sys_clock_getres((int)SYSCALL_ARG0(frame), SYSCALL_ARG1(frame));
         break;
-    }
+    case SYS_TIMER_CREATE:
+        SYSCALL_RET(frame) = (uint64_t)sys_timer_create((int)SYSCALL_ARG0(frame),
+                                                        SYSCALL_ARG1(frame), SYSCALL_ARG2(frame));
+        break;
+    case SYS_TIMER_SETTIME:
+        SYSCALL_RET(frame) =
+            (uint64_t)sys_timer_settime((int32_t)SYSCALL_ARG0(frame), (int)SYSCALL_ARG1(frame),
+                                        SYSCALL_ARG2(frame), SYSCALL_ARG3(frame));
+        break;
+    case SYS_TIMER_GETTIME:
+        SYSCALL_RET(frame) =
+            (uint64_t)sys_timer_gettime((int32_t)SYSCALL_ARG0(frame), SYSCALL_ARG1(frame));
+        break;
+    case SYS_TIMER_GETOVERRUN:
+        SYSCALL_RET(frame) =
+            (uint64_t)(int64_t)posix_timer_getoverrun((int32_t)SYSCALL_ARG0(frame));
+        break;
+    case SYS_TIMER_DELETE:
+        SYSCALL_RET(frame) = (uint64_t)(int64_t)posix_timer_delete((int32_t)SYSCALL_ARG0(frame));
+        break;
+    case SYS_RT_SIGQUEUEINFO:
+        SYSCALL_RET(frame) = (uint64_t)sys_rt_sigqueueinfo(
+            SYSCALL_PID(SYSCALL_ARG0(frame)), (int)SYSCALL_ARG1(frame), SYSCALL_ARG2(frame));
+        break;
+    case SYS_RT_TGSIGQUEUEINFO:
+        SYSCALL_RET(frame) = (uint64_t)sys_rt_tgsigqueueinfo(
+            SYSCALL_PID(SYSCALL_ARG0(frame)), SYSCALL_PID(SYSCALL_ARG1(frame)),
+            (int)SYSCALL_ARG2(frame), SYSCALL_ARG3(frame));
+        break;
     case SYS_CLOCK_NANOSLEEP: {
         if ((int)SYSCALL_ARG0(frame) != 0 && (int)SYSCALL_ARG0(frame) != 1 &&
             (int)SYSCALL_ARG0(frame) != 7) {
@@ -7151,13 +7292,13 @@ static void syscall_run(struct syscall_frame *frame) {
             break;
         }
         set &= ~((1ULL << (SIGKILL - 1)) | (1ULL << (SIGSTOP - 1)));
-        int32_t info[SIGNAL_SIGINFO_SIZE / 4];
-        int taken = process_take_signal(set, info);
+        struct signal_info info;
+        int taken = process_take_signal(set, &info);
         if (taken) {
             process->signal_waited = 0;
             process->syscall_no_restart = 0;
             clear_io_wait(process);
-            if (SYSCALL_ARG1(frame) && copy_to_user(SYSCALL_ARG1(frame), info, sizeof(info)) != 0)
+            if (SYSCALL_ARG1(frame) && write_signal_info(SYSCALL_ARG1(frame), &info) != 0)
                 SYSCALL_RET(frame) = (uint64_t)-(int64_t)EFAULT;
             else SYSCALL_RET(frame) = (uint64_t)taken;
             break;
@@ -7232,6 +7373,13 @@ static void syscall_run(struct syscall_frame *frame) {
         break;
     }
 
+    if (caller && caller == process_current() &&
+        (int64_t)SYSCALL_RET(frame) == -(int64_t)ERESTARTSYS) {
+        SYSCALL_RET(frame) = first_argument;
+        SYSCALL_RESTART(frame, syscall_number);
+        caller->syscall_rewound = 1;
+        caller->syscall_no_restart = 0;
+    }
     if (caller && caller == process_current())
         note_would_block(frame, syscall_number, first_argument);
     if (!skip_signal_delivery) process_prepare_user_return(frame);

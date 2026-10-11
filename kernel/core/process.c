@@ -15,9 +15,11 @@
 
 static int process_wake_all_locked(const void *channel);
 static int signal_would_act(const struct process *process, int signal_number);
+static int next_pending_signal(struct process *process);
 #include <tunix/kstring.h>
 #include <tunix/percpu.h>
 #include <tunix/pmm.h>
+#include <tunix/posix_timer.h>
 #include <tunix/process.h>
 #include <tunix/workqueue.h>
 #include <tunix/process_arch.h>
@@ -58,6 +60,7 @@ static int signal_would_act(const struct process *process, int signal_number);
 #define TICK_NS                       (1000000000ULL / TIMER_FREQUENCY_HZ)
 #define SCHED_TARGET_LATENCY_NS       (SCHED_TARGET_LATENCY_TICKS * TICK_NS)
 #define SCHED_MAX_SAMPLE_NS           1000000000ULL
+#define USER_CLOCK_TICK_NS            10000000ULL
 
 static const uint32_t nice_weights[40] = {
     88761, 71755, 56483, 46273, 36291, 29154, 23254, 18705, 14949, 11916, 9548, 7620, 6100, 4904,
@@ -363,7 +366,8 @@ void process_table_lock(void) { lock_acquire(&sched_lock); }
 void process_table_unlock(void) { lock_release(&sched_lock); }
 
 static void signal_one_process(struct process *target, int signal_number);
-static int send_signal(int64_t pid, int signal_number, int checked);
+static int deliver_signal(struct process *target, const struct signal_info *info);
+static int send_signal(int64_t pid, const struct signal_info *info, int checked);
 
 static struct process_memory *memory_create(uint64_t cr3, uint64_t brk_start, uint64_t brk_end,
                                             uint64_t mmap_base) {
@@ -453,6 +457,158 @@ uint64_t process_arg_limit(const struct process *process) {
 static uint64_t signal_bit(int signal_number) {
     if (signal_number < 1 || signal_number > TUNIX_NSIG) return 0;
     return 1ULL << (signal_number - 1);
+}
+
+#define SYNCHRONOUS_SIGNALS \
+    (signal_bit(SIGSEGV) | signal_bit(SIGBUS) | signal_bit(SIGILL) | signal_bit(SIGTRAP) | \
+     signal_bit(SIGFPE) | signal_bit(SIGSYS))
+#define STOP_SIGNALS \
+    (signal_bit(SIGSTOP) | signal_bit(SIGTSTP) | signal_bit(SIGTTIN) | signal_bit(SIGTTOU))
+
+static void signal_info_init(struct signal_info *info, int signal_number, int code) {
+    memset(info, 0, sizeof(*info));
+    info->signo = signal_number;
+    info->code = code;
+}
+
+static void signal_info_from_current(struct signal_info *info, int signal_number, int code) {
+    signal_info_init(info, signal_number, code);
+    if (!current) return;
+    info->fields.sender.pid = (int32_t)current->tgid;
+    info->fields.sender.uid = current->cred.uid;
+}
+
+static int signal_default_ignored(int signal_number) {
+    return signal_number == SIGCHLD || signal_number == SIGCONT || signal_number == SIGURG ||
+        signal_number == SIGWINCH;
+}
+
+static int signal_ignored(const struct process *process, int signal_number) {
+    if (signal_number == SIGKILL || signal_number == SIGSTOP) return 0;
+    uint64_t handler = process->signal_actions[signal_number - 1].handler;
+    return handler == SIG_IGN || (handler == SIG_DFL && signal_default_ignored(signal_number));
+}
+
+static void signal_queue_link(struct process *process, struct signal_entry *entry) {
+    entry->next = NULL;
+    entry->queued = 1;
+    if (process->signal_queue_tail) process->signal_queue_tail->next = entry;
+    else process->signal_queue = entry;
+    process->signal_queue_tail = entry;
+}
+
+static void signal_queue_unlink(struct process *process, struct signal_entry *entry,
+                                struct signal_entry *previous) {
+    if (previous) previous->next = entry->next;
+    else process->signal_queue = entry->next;
+    if (process->signal_queue_tail == entry) process->signal_queue_tail = previous;
+    entry->next = NULL;
+    entry->queued = 0;
+}
+
+static void signal_entry_release(struct process *process, struct signal_entry *entry) {
+    if (entry->timer) posix_timer_dequeued(entry->timer);
+    if (!entry->allocated) return;
+    process->signal_queued--;
+    kfree(entry);
+}
+
+static void flush_signals(struct process *process, uint64_t mask) {
+    struct signal_entry *previous = NULL;
+    struct signal_entry *entry = process->signal_queue;
+    while (entry) {
+        struct signal_entry *next = entry->next;
+        if (mask & signal_bit(entry->info.signo)) {
+            signal_queue_unlink(process, entry, previous);
+            signal_entry_release(process, entry);
+        } else {
+            previous = entry;
+        }
+        entry = next;
+    }
+    __atomic_fetch_and(&process->signal_pending, ~mask, __ATOMIC_ACQ_REL);
+}
+
+static uint64_t signal_queue_limit(const struct process *process) {
+    return process->rlimits[PROCESS_RLIMIT_SIGPENDING].soft;
+}
+
+static int queue_signal_entry(struct process *process, const struct signal_info *info,
+                              struct signal_entry *prepared) {
+    int signal_number = info->signo;
+    uint64_t bit = signal_bit(signal_number);
+    if (!bit) return -EINVAL;
+    if (process->state == PROCESS_ZOMBIE || process->state == PROCESS_DEAD) return 0;
+    if (signal_number == SIGCONT) flush_signals(process, STOP_SIGNALS);
+    if (STOP_SIGNALS & bit) flush_signals(process, signal_bit(SIGCONT));
+    if (!(process->signal_blocked & bit) && signal_ignored(process, signal_number))
+        return prepared ? 1 : 0;
+    if (prepared) {
+        if (signal_number < SIGRTMIN &&
+            (__atomic_load_n(&process->signal_pending, __ATOMIC_ACQUIRE) & bit))
+            return 1;
+        signal_queue_link(process, prepared);
+    } else if (signal_number < SIGRTMIN) {
+        if (__atomic_load_n(&process->signal_pending, __ATOMIC_ACQUIRE) & bit) return 0;
+        struct signal_entry *slot = &process->signal_slots[signal_number - 1];
+        memset(slot, 0, sizeof(*slot));
+        slot->info = *info;
+        signal_queue_link(process, slot);
+    } else {
+        struct signal_entry *entry = NULL;
+        if (process->signal_queued < signal_queue_limit(process))
+            entry = (struct signal_entry *)kmalloc(sizeof(*entry));
+        if (entry) {
+            memset(entry, 0, sizeof(*entry));
+            entry->allocated = 1;
+            entry->info = *info;
+            process->signal_queued++;
+            signal_queue_link(process, entry);
+        } else if (info->code != SI_USER && info->code != SI_KERNEL) {
+            return -EAGAIN;
+        }
+    }
+    __atomic_fetch_or(&process->signal_pending, bit, __ATOMIC_RELEASE);
+    return 0;
+}
+
+static int queue_signal(struct process *process, const struct signal_info *info) {
+    return queue_signal_entry(process, info, NULL);
+}
+
+static int dequeue_signal(struct process *process, uint64_t mask, struct signal_entry *taken) {
+    uint64_t pending = __atomic_load_n(&process->signal_pending, __ATOMIC_ACQUIRE) & mask;
+    if (!pending) return 0;
+    uint64_t preferred = pending & SYNCHRONOUS_SIGNALS;
+    int signal_number = __builtin_ctzll(preferred ? preferred : pending) + 1;
+    struct signal_entry *found = NULL;
+    struct signal_entry *found_previous = NULL;
+    int more = 0;
+    struct signal_entry *previous = NULL;
+    for (struct signal_entry *entry = process->signal_queue; entry;
+         previous = entry, entry = entry->next) {
+        if (entry->info.signo != signal_number) continue;
+        if (found) {
+            more = 1;
+            break;
+        }
+        found = entry;
+        found_previous = previous;
+    }
+    memset(taken, 0, sizeof(*taken));
+    if (found) {
+        signal_queue_unlink(process, found, found_previous);
+        *taken = *found;
+        taken->next = NULL;
+        taken->allocated = 0;
+        if (found->timer) taken->info.fields.timer.overrun = posix_timer_overrun(found->timer);
+        signal_entry_release(process, found);
+    } else {
+        signal_info_init(&taken->info, signal_number, SI_USER);
+    }
+    if (!more)
+        __atomic_fetch_and(&process->signal_pending, ~signal_bit(signal_number), __ATOMIC_ACQ_REL);
+    return signal_number;
 }
 
 void process_init(void) {
@@ -792,6 +948,14 @@ static const struct process_rlimit default_rlimits[PROCESS_RLIMITS] = {
     [14] = {0, 0},
     [15] = {PROCESS_RLIM_INFINITY, PROCESS_RLIM_INFINITY},
 };
+
+static void set_default_rlimits(struct process *process) {
+    memcpy(process->rlimits, default_rlimits, sizeof(process->rlimits));
+    uint64_t pending = pmm_total_page_count() / 64U;
+    if (pending < 64U) pending = 64U;
+    process->rlimits[PROCESS_RLIMIT_SIGPENDING].soft = pending;
+    process->rlimits[PROCESS_RLIMIT_SIGPENDING].hard = pending;
+}
 
 int process_set_rlimit(struct process *process, unsigned resource,
                        const struct process_rlimit *value) {
@@ -1133,6 +1297,10 @@ static void set_exe_path(struct process *process, struct vfs_node *file, const c
 }
 
 static void free_process_struct(struct process *process) {
+    if (process->signal_queue) {
+        SCHED_LOCKED;
+        flush_signals(process, ~0ULL);
+    }
     cgroup_drop(process);
     cred_groups_release(&process->cred);
     kfree(process->io_watch_fd);
@@ -1154,7 +1322,7 @@ struct process *process_create_from_path(const char *path) {
         return NULL;
     }
     memset(process, 0, sizeof(*process));
-    memcpy(process->rlimits, default_rlimits, sizeof(process->rlimits));
+    set_default_rlimits(process);
     process->pid = __atomic_fetch_add(&next_pid, 1, __ATOMIC_RELAXED);
     process->tgid = process->pid;
     process->ppid = 0;
@@ -1235,7 +1403,7 @@ struct process *process_create_kthread(const char *name, void (*body)(void *), v
     struct process *process = (struct process *)kmalloc(sizeof(*process));
     if (!process) return NULL;
     memset(process, 0, sizeof(*process));
-    memcpy(process->rlimits, default_rlimits, sizeof(process->rlimits));
+    set_default_rlimits(process);
     process->pid = __atomic_fetch_add(&next_pid, 1, __ATOMIC_RELAXED);
     process->tgid = process->pid;
     process->pgid = 0;
@@ -1371,6 +1539,7 @@ static void signal_one_process(struct process *target, int signal_number);
 static void wake_expired_timers(uint64_t now) {
     if (!queue || now < earliest_deadline) return;
     earliest_deadline = UINT64_MAX;
+    note_deadline(posix_timers_expire(now));
 
     struct process *item = queue;
     do {
@@ -1811,8 +1980,31 @@ void process_finish_wait(void) {
     if (!self) return;
     if (self->state != PROCESS_RUNNING) set_process_state(self, PROCESS_RUNNING);
     self->kernel_waiting = 0;
+    self->kernel_wait_interruptible = 0;
     self->wait_channel = NULL;
     self->kernel_wait_deadline_ns = 0;
+}
+
+static int interrupting_signal_pending(struct process *process) {
+    if (process->group_exit_pending) return 1;
+    return signal_would_act(process, next_pending_signal(process));
+}
+
+int process_prepare_wait_interruptible(const void *channel, uint64_t deadline_ns) {
+    struct process *self = current;
+    if (!self) return -EINTR;
+    SCHED_LOCKED;
+    if (interrupting_signal_pending(self)) return -EINTR;
+    process_prepare_wait(channel, deadline_ns);
+    self->kernel_wait_interruptible = 1;
+    return 0;
+}
+
+int process_wait_interrupted(void) {
+    struct process *self = current;
+    if (!self) return 1;
+    SCHED_LOCKED;
+    return interrupting_signal_pending(self);
 }
 
 void process_kernel_yield(void) {
@@ -2069,7 +2261,9 @@ static int reclaim_or_kill(void) {
     kprintf("OOM: killing pid=%u (%s), %u MiB resident\n", (unsigned)victim->pid, victim->name,
             (unsigned)(worst / 256U));
     wake_bump();
-    (void)send_signal((int64_t)victim->pid, SIGKILL, 0);
+    struct signal_info info;
+    signal_info_init(&info, SIGKILL, SI_KERNEL);
+    (void)send_signal((int64_t)victim->pid, &info, 0);
     return 0;
 }
 
@@ -2213,12 +2407,15 @@ int process_handle_cow_fault(uint64_t fault_address) {
 int process_signal_has_handler(int signal_number) {
     if (!current || signal_number < 1 || signal_number > TUNIX_NSIG) return 0;
     uint64_t handler = current->signal_actions[signal_number - 1].handler;
-    return handler != SIG_DFL && handler != SIG_IGN;
+    return handler != SIG_DFL && handler != SIG_IGN &&
+        !(current->signal_blocked & signal_bit(signal_number));
 }
 
-int process_fault_from_interrupt(struct interrupt_frame *frame, int signal_number) {
-    if (!frame || !arch_interrupt_from_user(frame) || !current || current->state != PROCESS_RUNNING)
+int process_fault_from_interrupt(struct interrupt_frame *frame, const struct process_fault *fault) {
+    if (!frame || !fault || !arch_interrupt_from_user(frame) || !current ||
+        current->state != PROCESS_RUNNING)
         return 0;
+    int signal_number = fault->signal;
 
     process_account_runtime();
     arch_frame_from_interrupt(&current->saved_frame, frame);
@@ -2231,15 +2428,32 @@ int process_fault_from_interrupt(struct interrupt_frame *frame, int signal_numbe
                                                 : "signal";
     eventfs_emit_process_fault(current->cred.euid, current->pid, type, current->name);
 
-    (void)process_send_signal((int64_t)current->pid, signal_number);
+    {
+        SCHED_LOCKED;
+        wake_bump();
+        uint64_t bit = signal_bit(signal_number);
+        struct tunix_sigaction *action = &current->signal_actions[signal_number - 1];
+        if ((current->signal_blocked & bit) || action->handler == SIG_IGN) {
+            action->handler = SIG_DFL;
+            current->signal_blocked &= ~bit;
+        }
+        struct signal_info info;
+        signal_info_init(&info, signal_number, fault->code);
+        info.fields.fault.address = fault->address;
+        if (queue_signal(current, &info) == 0 && signal_number < SIGRTMIN) {
+            struct signal_entry *slot = &current->signal_slots[signal_number - 1];
+            if (slot->queued) {
+                slot->trap_number = (uint8_t)fault->trap;
+                slot->trap_error = fault->error;
+            }
+        }
+    }
     process_prepare_user_return(&resume);
     if (!current || current->state != PROCESS_RUNNING) return 1;
     current->saved_frame = resume;
     arch_frame_to_interrupt(frame, &resume);
     return 1;
 }
-
-static int next_pending_signal(struct process *process);
 
 static int needs_user_work(struct process *process) {
     return process->group_exit_pending ||
@@ -2406,6 +2620,17 @@ static void wake_waiting_parent(struct process *parent) {
     }
 }
 
+static void child_signal_info(struct signal_info *info, const struct process *child, int code) {
+    signal_info_init(info, SIGCHLD, code);
+    info->fields.child.pid = (int32_t)child->pid;
+    info->fields.child.uid = child->cred.uid;
+    if (code == CLD_EXITED) info->fields.child.status = child->exit_status & 0xFF;
+    else if (code == CLD_KILLED) info->fields.child.status = child->termination_signal & 0x7F;
+    else if (code == CLD_STOPPED) info->fields.child.status = child->stop_signal & 0x7F;
+    else info->fields.child.status = SIGCONT;
+    info->fields.child.utime = (int64_t)(process_runtime_ns(child) / USER_CLOCK_TICK_NS);
+}
+
 static void notify_parent_of_exit(struct process *child) {
     struct process *parent = find_parent(child);
     if (!parent) {
@@ -2413,15 +2638,21 @@ static void notify_parent_of_exit(struct process *child) {
         return;
     }
     sibling_to_front(child);
-    __atomic_fetch_or(&parent->signal_pending, signal_bit(SIGCHLD), __ATOMIC_RELEASE);
+    struct signal_info info;
+    child_signal_info(&info, child, child->termination_signal ? CLD_KILLED : CLD_EXITED);
+    (void)queue_signal(parent, &info);
     wake_waiting_parent(parent);
     __atomic_store_n(&io_recheck_pending, 1, __ATOMIC_RELEASE);
 }
 
-static void notify_parent_of_job_change(struct process *child) {
+static void notify_parent_of_job_change(struct process *child, int code) {
     struct process *parent = find_parent(child);
     if (!parent) return;
-    __atomic_fetch_or(&parent->signal_pending, signal_bit(SIGCHLD), __ATOMIC_RELEASE);
+    if (!(parent->signal_actions[SIGCHLD - 1].flags & SA_NOCLDSTOP)) {
+        struct signal_info info;
+        child_signal_info(&info, child, code);
+        (void)queue_signal(parent, &info);
+    }
     wake_waiting_parent(parent);
 }
 
@@ -2492,7 +2723,11 @@ static void notify_children_of_parent_death(struct process *parent) {
             int signal_number = child->pdeath_signal;
             child->ppid = 1;
             sibling_link(child);
-            if (signal_number > 0) signal_one_process(child, signal_number);
+            if (signal_number > 0) {
+                struct signal_info info;
+                signal_info_from_current(&info, signal_number, SI_USER);
+                (void)deliver_signal(child, &info);
+            }
             if (child->state == PROCESS_ZOMBIE) notify_parent_of_exit(child);
         }
         child = next;
@@ -2532,11 +2767,19 @@ void process_exit_from_syscall(struct syscall_frame *frame, int status) {
     }
     process_release_files(exiting);
     cgroup_exit(exiting);
-    if (!exiting->is_thread)
+    if (!exiting->is_thread) {
         vt_process_exited(exiting->pid, exiting->sid == exiting->pid ? exiting->sid : 0);
+        posix_timers_release(exiting->tgid);
+    }
 
     SCHED_LOCKED;
     wake_bump();
+    flush_signals(exiting, ~0ULL);
+    if (exiting->is_thread) {
+        struct process *leader = process_find(exiting->tgid);
+        if (leader && leader != exiting)
+            leader->exited_threads_runtime_ns += process_runtime_ns(exiting);
+    }
     set_process_state(exiting, PROCESS_ZOMBIE);
     if (exiting->memory && !exiting->on_zombie_list) {
         exiting->on_zombie_list = 1;
@@ -3220,15 +3463,20 @@ void process_note_deadline(uint64_t deadline_ns) {
 
 void process_set_sigaction(int signal_number, const struct tunix_sigaction *action) {
     if (!current || signal_number < 1 || signal_number > TUNIX_NSIG) return;
+    SCHED_LOCKED;
     current->signal_actions[signal_number - 1] = *action;
     arch_sanitize_sigaction(&current->signal_actions[signal_number - 1]);
     action = &current->signal_actions[signal_number - 1];
+    int ignored = signal_ignored(current, signal_number);
+    if (ignored) flush_signals(current, signal_bit(signal_number));
     if (!queue) return;
     uint64_t group = current->tgid;
     struct process *item = queue;
     do {
-        if (item != current && item->tgid == group && item->state != PROCESS_DEAD)
+        if (item != current && item->tgid == group && item->state != PROCESS_DEAD) {
             item->signal_actions[signal_number - 1] = *action;
+            if (ignored) flush_signals(item, signal_bit(signal_number));
+        }
         item = item->next;
     } while (item != queue);
 }
@@ -3246,7 +3494,8 @@ static void terminate_sibling_threads(int status) {
             item->exit_status = status;
             item->is_thread = 1;
             item->group_exit_pending = 1;
-            if ((item->state == PROCESS_BLOCKED && !item->kernel_waiting) ||
+            if ((item->state == PROCESS_BLOCKED &&
+                 (!item->kernel_waiting || item->kernel_wait_interruptible)) ||
                 item->state == PROCESS_STOPPED) {
                 item->futex_wait_active = 0;
                 item->wait4_active = 0;
@@ -3325,9 +3574,9 @@ int64_t process_exec_from_syscall(struct syscall_frame *frame, const char *path,
         if (current->signal_actions[sig].handler != SIG_IGN)
             memset(&current->signal_actions[sig], 0, sizeof(current->signal_actions[sig]));
     }
-    __atomic_store_n(&current->signal_pending, 0, __ATOMIC_RELEASE);
     current->in_signal = 0;
     file_table_close_on_exec(current->files);
+    posix_timers_release(current->tgid);
 
     memset(frame, 0, sizeof(*frame));
     arch_frame_enter_user(frame, current->entry, current->user_stack_top);
@@ -3413,11 +3662,6 @@ struct waitid_siginfo {
     uint8_t pad1[128 - 28];
 };
 
-#define CLD_EXITED    1
-#define CLD_KILLED    2
-#define CLD_STOPPED   5
-#define CLD_CONTINUED 6
-
 int64_t process_waitid_from_syscall(int64_t pid_spec, uint64_t info_user, int options) {
     if (!current || !info_user) return -EINVAL;
     struct process *parent;
@@ -3472,27 +3716,31 @@ int64_t process_waitid_from_syscall(int64_t pid_spec, uint64_t info_user, int op
     return 0;
 }
 
-static void signal_one_process(struct process *target, int signal_number) {
-    if (signal_number == 0) return;
+static int deliver_signal_entry(struct process *target, const struct signal_info *info,
+                                struct signal_entry *prepared) {
+    int signal_number = info->signo;
+    if (signal_number == 0) return 0;
     eventfs_emit_process_signal(target->cred.euid, target->pid, signal_number);
     if (signal_number == SIGKILL && target->state == PROCESS_STOPPED) wake_to_ready(target);
     if (signal_number == SIGCONT && target->state == PROCESS_STOPPED) {
         wake_to_ready(target);
         target->continued_pending = 1;
         target->stop_reported = 0;
-        __atomic_fetch_and(&target->signal_pending,
-                           ~(signal_bit(SIGSTOP) | signal_bit(SIGTSTP) | signal_bit(SIGTTIN) |
-                             signal_bit(SIGTTOU)),
-                           __ATOMIC_RELEASE);
-        notify_parent_of_job_change(target);
+        notify_parent_of_job_change(target, CLD_CONTINUED);
     }
-    __atomic_fetch_or(&target->signal_pending, signal_bit(signal_number), __ATOMIC_RELEASE);
+    int queued = queue_signal_entry(target, info, prepared);
+    if (queued != 0) return queued;
     if (signal_number == SIGCHLD && target->state == PROCESS_BLOCKED &&
         target->wait_channel == &io_wait_token && !(target->signal_waited & signal_bit(SIGCHLD)) &&
         !signal_reaches_waiter(target, SIGCHLD)) {
         target->wait_channel = NULL;
         wake_to_ready(target);
-        return;
+        return 0;
+    }
+    if (target->state == PROCESS_BLOCKED && target->kernel_waiting &&
+        target->kernel_wait_interruptible && signal_reaches_waiter(target, signal_number)) {
+        wake_to_ready(target);
+        return 0;
     }
     if (target->state == PROCESS_BLOCKED && !target->kernel_waiting &&
         (signal_number != SIGCHLD || (target->signal_waited & signal_bit(SIGCHLD)) ||
@@ -3509,6 +3757,52 @@ static void signal_one_process(struct process *target, int signal_number) {
         target->wait_options = 0;
         wake_to_ready(target);
     }
+    return 0;
+}
+
+static int deliver_signal(struct process *target, const struct signal_info *info) {
+    return deliver_signal_entry(target, info, NULL);
+}
+
+int process_queue_signal_entry_locked(struct process *target, struct signal_entry *entry) {
+    if (!target || !entry || target->is_kthread) return 1;
+    return deliver_signal_entry(target, &entry->info, entry);
+}
+
+void process_unqueue_signal_entry_locked(struct process *target, struct signal_entry *entry) {
+    if (!target || !entry || !entry->queued) return;
+    struct signal_entry *previous = NULL;
+    int others = 0;
+    struct signal_entry *found = NULL;
+    for (struct signal_entry *item = target->signal_queue; item; item = item->next) {
+        if (item == entry) found = item;
+        else if (item->info.signo == entry->info.signo) others = 1;
+        if (!found) previous = item;
+    }
+    if (!found) return;
+    signal_queue_unlink(target, entry, previous);
+    if (!others)
+        __atomic_fetch_and(&target->signal_pending, ~signal_bit(entry->info.signo),
+                           __ATOMIC_ACQ_REL);
+}
+
+uint64_t process_cpu_time_locked(struct process *target, int thread) {
+    if (!target) return 0;
+    if (thread) return process_runtime_ns(target);
+    uint64_t total = target->exited_threads_runtime_ns;
+    struct process *item = queue;
+    if (item) do {
+            if (item->tgid == target->tgid && item->state != PROCESS_DEAD)
+                total += process_runtime_ns(item);
+            item = item->next;
+        } while (item != queue);
+    return total;
+}
+
+static void signal_one_process(struct process *target, int signal_number) {
+    struct signal_info info;
+    signal_info_init(&info, signal_number, SI_KERNEL);
+    (void)deliver_signal(target, &info);
 }
 
 static int may_signal(const struct process *target) {
@@ -3518,20 +3812,8 @@ static int may_signal(const struct process *target) {
         sender->euid == target->cred.uid || sender->euid == target->cred.suid;
 }
 
-static void record_sender_code(struct process *target, int signal_number, int code) {
-    if (signal_number < 1 || signal_number > TUNIX_NSIG) return;
-    target->signal_sender_pid[signal_number - 1] = (uint32_t)current->tgid;
-    target->signal_sender_uid[signal_number - 1] = current->cred.uid;
-    target->signal_sender_code[signal_number - 1] = (int8_t)code;
-    __atomic_fetch_or(&target->signal_user_sent, signal_bit(signal_number), __ATOMIC_RELEASE);
-}
-
-static void record_sender(struct process *target, int signal_number) {
-    record_sender_code(target, signal_number, SI_USER);
-}
-
-int64_t process_send_thread_signal(int64_t tgid, int64_t tid, int signal_number) {
-    if (signal_number < 0 || signal_number > TUNIX_NSIG || tid <= 0) return -EINVAL;
+int64_t process_send_thread_signal_info(int64_t tgid, int64_t tid, struct signal_info *info) {
+    if (!info || info->signo < 0 || info->signo > TUNIX_NSIG || tid <= 0) return -EINVAL;
     if (!current) return -EINVAL;
     SCHED_LOCKED;
     wake_bump();
@@ -3539,13 +3821,31 @@ int64_t process_send_thread_signal(int64_t tgid, int64_t tid, int signal_number)
     if (!target || target->state == PROCESS_DEAD) return -ESRCH;
     if (tgid > 0 && target->tgid != (uint64_t)tgid) return -ESRCH;
     if (!may_signal(target)) return -EPERM;
-    if (target->is_kthread || !signal_number) return 0;
-    record_sender_code(target, signal_number, SI_TKILL);
-    signal_one_process(target, signal_number);
+    if (target->is_kthread || !info->signo) return 0;
+    return deliver_signal(target, info);
+}
+
+int64_t process_send_thread_signal(int64_t tgid, int64_t tid, int signal_number) {
+    struct signal_info info;
+    signal_info_from_current(&info, signal_number, SI_TKILL);
+    return process_send_thread_signal_info(tgid, tid, &info);
+}
+
+static int deliver_to_process(struct process *target, const struct signal_info *info) {
+    int status = deliver_signal(target, info);
+    uint64_t whole_group = STOP_SIGNALS | signal_bit(SIGCONT) | signal_bit(SIGKILL);
+    if (status != 0 || !(signal_bit(info->signo) & whole_group)) return status;
+    struct process *item = queue;
+    do {
+        if (item != target && item->tgid == target->tgid && item->state != PROCESS_DEAD)
+            (void)deliver_signal(item, info);
+        item = item->next;
+    } while (item != queue);
     return 0;
 }
 
-static int send_signal(int64_t pid, int signal_number, int checked) {
+static int send_signal(int64_t pid, const struct signal_info *info, int checked) {
+    int signal_number = info->signo;
     if (signal_number < 0 || signal_number > TUNIX_NSIG) return -EINVAL;
     if ((checked || pid == 0) && !current) return -EINVAL;
     if (pid > 0) {
@@ -3553,42 +3853,54 @@ static int send_signal(int64_t pid, int signal_number, int checked) {
         if (!target) return -ESRCH;
         if (target->is_kthread) return checked && !may_signal(target) ? -EPERM : 0;
         if (checked && !may_signal(target)) return -EPERM;
-        if (checked) record_sender(target, signal_number);
-        signal_one_process(target, signal_number);
-        return 0;
+        return deliver_to_process(target, info);
     }
 
     uint64_t group = pid == 0 ? current->pgid : (uint64_t)(-pid);
     int delivered = 0;
     int refused = 0;
+    int failure = 0;
     if (!queue) return -ESRCH;
     struct process *target = queue;
     do {
-        int match = pid == -1 ? target->pid != 1 : target->pgid == group;
-        if (match && target->state != PROCESS_DEAD && !target->is_kthread) {
+        int match =
+            pid == -1 ? target->pid != 1 && target->tgid != current->tgid : target->pgid == group;
+        if (match && target->state != PROCESS_DEAD && !target->is_kthread && !target->is_thread) {
             if (checked && !may_signal(target)) refused = 1;
             else {
-                if (checked) record_sender(target, signal_number);
-                signal_one_process(target, signal_number);
-                delivered = 1;
+                int status = deliver_to_process(target, info);
+                if (status == 0) delivered = 1;
+                else failure = status;
             }
         }
         target = target->next;
     } while (target != queue);
     if (delivered) return 0;
+    if (failure) return failure;
     return refused ? -EPERM : -ESRCH;
 }
 
 int process_send_signal(int64_t pid, int signal_number) {
     SCHED_LOCKED;
     wake_bump();
-    return send_signal(pid, signal_number, 0);
+    struct signal_info info;
+    signal_info_init(&info, signal_number, SI_KERNEL);
+    return send_signal(pid, &info, 0);
 }
 
 int process_send_signal_checked(int64_t pid, int signal_number) {
     SCHED_LOCKED;
     wake_bump();
-    return send_signal(pid, signal_number, 1);
+    struct signal_info info;
+    signal_info_from_current(&info, signal_number, SI_USER);
+    return send_signal(pid, &info, 1);
+}
+
+int process_send_signal_info(int64_t pid, struct signal_info *info) {
+    if (!info) return -EINVAL;
+    SCHED_LOCKED;
+    wake_bump();
+    return send_signal(pid, info, 1);
 }
 
 int process_setpgid(int64_t pid, int64_t pgid) {
@@ -3620,11 +3932,15 @@ int process_sigreturn(struct syscall_frame *frame) {
     *frame = current->signal_saved_frame;
     if (current->signal_context_address) {
         uint8_t context[SIGNAL_CONTEXT_SIZE];
-        if (copy_from_user(context, current->signal_context_address, SIGNAL_CONTEXT_SIZE) == 0)
+        if (copy_from_user(context, current->signal_context_address, SIGNAL_CONTEXT_SIZE) == 0) {
             read_user_context(frame, context);
+            memcpy(&current->signal_saved_mask, context + UCONTEXT_SIGMASK_OFFSET,
+                   sizeof(current->signal_saved_mask));
+        }
     }
     current->signal_context_address = 0;
-    current->signal_blocked = current->signal_saved_mask;
+    current->signal_blocked =
+        current->signal_saved_mask & ~(signal_bit(SIGKILL) | signal_bit(SIGSTOP));
     current->in_signal = 0;
     return 0;
 }
@@ -3642,12 +3958,7 @@ static int next_pending_signal(struct process *process) {
 
 static int signal_would_act(const struct process *process, int signal_number) {
     if (!process || !signal_number) return 0;
-    if (signal_number == SIGKILL || signal_number == SIGSTOP) return 1;
-    const struct tunix_sigaction *action = &process->signal_actions[signal_number - 1];
-    if (action->handler == SIG_IGN) return 0;
-    if (action->handler == SIG_DFL && (signal_number == SIGCHLD || signal_number == SIGCONT))
-        return 0;
-    return 1;
+    return !signal_ignored(process, signal_number);
 }
 
 struct vfs_node *process_get_root(void) {
@@ -3685,26 +3996,13 @@ static uint64_t take_resume_mask(void) {
     return current->signal_wait_mask_saved;
 }
 
-int process_take_signal(uint64_t set, int32_t *info) {
+int process_take_signal(uint64_t set, struct signal_info *info) {
     struct process *self = current;
     if (!self) return 0;
     SCHED_LOCKED;
-    uint64_t pending = __atomic_load_n(&self->signal_pending, __ATOMIC_ACQUIRE) & set;
-    if (!pending) return 0;
-    int signal_number = __builtin_ctzll(pending) + 1;
-    uint64_t bit = signal_bit(signal_number);
-    __atomic_fetch_and(&self->signal_pending, ~bit, __ATOMIC_ACQ_REL);
-    memset(info, 0, SIGNAL_SIGINFO_SIZE);
-    info[0] = signal_number;
-    int from_user = (self->signal_user_sent & bit) != 0;
-    info[2] = from_user ? self->signal_sender_code[signal_number - 1] : SI_KERNEL;
-    if (from_user) {
-        info[4] = (int32_t)self->signal_sender_pid[signal_number - 1];
-        info[5] = (int32_t)self->signal_sender_uid[signal_number - 1];
-    }
-    self->signal_user_sent &= ~bit;
-    self->signal_sender_pid[signal_number - 1] = 0;
-    self->signal_sender_uid[signal_number - 1] = 0;
+    struct signal_entry taken;
+    int signal_number = dequeue_signal(self, set, &taken);
+    if (signal_number) *info = taken.info;
     return signal_number;
 }
 
@@ -3716,9 +4014,12 @@ int process_signal_interrupts_wait(void) {
     return 1;
 }
 
-static void fill_user_context(uint8_t *context, const struct syscall_frame *frame,
-                              uint64_t blocked) {
+static void fill_user_context(uint8_t *context, const struct syscall_frame *frame, uint64_t blocked,
+                              const struct signal_entry *signal) {
     arch_fill_mcontext(context, frame);
+    if (signal->trap_number || signal->info.fields.fault.address)
+        arch_fill_fault_context(context, signal->trap_number, signal->trap_error,
+                                signal->info.fields.fault.address);
     memcpy(context + UCONTEXT_SIGMASK_OFFSET, &blocked, sizeof(blocked));
     uint64_t stack_pointer = current ? current->signal_stack_pointer : 0;
     uint64_t stack_size = current ? current->signal_stack_size : 0;
@@ -3752,9 +4053,15 @@ void process_prepare_user_return(struct syscall_frame *frame) {
             process_restore_signal_mask();
         return;
     }
-    int signal_number = next_pending_signal(current);
+    struct signal_entry taken;
+    int signal_number;
+    {
+        SCHED_LOCKED;
+        signal_number =
+            dequeue_signal(current, ~current->signal_blocked | signal_bit(SIGKILL), &taken);
+    }
+    if (!signal_number) return;
     uint64_t bit = signal_bit(signal_number);
-    __atomic_fetch_and(&current->signal_pending, ~bit, __ATOMIC_ACQ_REL);
     struct tunix_sigaction *action = &current->signal_actions[signal_number - 1];
 
     if (!signal_would_act(current, signal_number)) return;
@@ -3768,7 +4075,7 @@ void process_prepare_user_return(struct syscall_frame *frame) {
         current->continued_pending = 0;
         current->saved_frame = *frame;
         set_process_state(current, PROCESS_STOPPED);
-        notify_parent_of_job_change(current);
+        notify_parent_of_job_change(current, CLD_STOPPED);
         if (switch_to_next(frame, current) != 0) go_idle();
         return;
     }
@@ -3807,22 +4114,16 @@ void process_prepare_user_return(struct syscall_frame *frame) {
     if (action->flags & SA_SIGINFO) {
         uint8_t context[SIGNAL_CONTEXT_SIZE];
         memset(context, 0, sizeof(context));
-        fill_user_context(context, frame, resume_mask);
+        fill_user_context(context, frame, resume_mask, &taken);
         area -= SIGNAL_CONTEXT_SIZE;
         context_address = area;
         if (copy_to_user(context_address, context, SIGNAL_CONTEXT_SIZE) != 0) {
             process_exit_from_signal(frame, SIGSEGV);
             return;
         }
-        int32_t info[SIGNAL_SIGINFO_SIZE / 4];
+        uint8_t info[SIGNAL_SIGINFO_SIZE];
         memset(info, 0, sizeof(info));
-        info[0] = signal_number;
-        int from_user = (current->signal_user_sent & bit) != 0;
-        info[2] = from_user ? current->signal_sender_code[signal_number - 1] : SI_KERNEL;
-        if (from_user) {
-            info[4] = (int32_t)current->signal_sender_pid[signal_number - 1];
-            info[5] = (int32_t)current->signal_sender_uid[signal_number - 1];
-        }
+        memcpy(info, &taken.info, sizeof(taken.info));
         area -= SIGNAL_SIGINFO_SIZE;
         siginfo_address = area;
         if (copy_to_user(siginfo_address, info, SIGNAL_SIGINFO_SIZE) != 0) {
@@ -3831,10 +4132,6 @@ void process_prepare_user_return(struct syscall_frame *frame) {
         }
         area &= ~15ULL;
     }
-    current->signal_user_sent &= ~bit;
-    current->signal_sender_pid[signal_number - 1] = 0;
-    current->signal_sender_uid[signal_number - 1] = 0;
-
     uint64_t new_rsp;
     process_memory_enter();
     int pushed = arch_signal_push_restorer(current->cr3, area, &action->restorer, &new_rsp);

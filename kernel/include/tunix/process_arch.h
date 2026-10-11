@@ -132,6 +132,13 @@ static inline void arch_fill_mcontext(uint8_t *context, const struct syscall_fra
     arch_mcontext_put(context, MCONTEXT_EFLAGS, frame->user_rflags);
 }
 
+static inline void arch_fill_fault_context(uint8_t *context, unsigned trap, uint32_t error,
+                                           uint64_t address) {
+    arch_mcontext_put(context, MCONTEXT_TRAPNO, trap);
+    arch_mcontext_put(context, MCONTEXT_ERR, error);
+    if (trap == 14U) arch_mcontext_put(context, MCONTEXT_CR2, address);
+}
+
 static inline void arch_read_mcontext(struct syscall_frame *frame, const uint8_t *context) {
     frame->r8 = arch_mcontext_get(context, MCONTEXT_R8);
     frame->r9 = arch_mcontext_get(context, MCONTEXT_R9);
@@ -242,6 +249,13 @@ static inline void arch_fill_mcontext(uint8_t *context, const struct syscall_fra
     memcpy(sigcontext + SIGCONTEXT_SP_OFFSET, &frame->sp_el0, sizeof(frame->sp_el0));
     memcpy(sigcontext + SIGCONTEXT_PC_OFFSET, &frame->elr, sizeof(frame->elr));
     memcpy(sigcontext + SIGCONTEXT_PSTATE_OFFSET, &frame->spsr, sizeof(frame->spsr));
+}
+
+static inline void arch_fill_fault_context(uint8_t *context, unsigned trap, uint32_t error,
+                                           uint64_t address) {
+    (void)trap;
+    (void)error;
+    memcpy(context + UCONTEXT_MCONTEXT_OFFSET, &address, sizeof(address));
 }
 
 static inline void arch_read_mcontext(struct syscall_frame *frame, const uint8_t *context) {
