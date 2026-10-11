@@ -3157,6 +3157,29 @@ static int64_t sys_lseek(int fd, int64_t offset, int whence) {
     return result;
 }
 
+static uint8_t dirent_type(uint32_t kind) {
+    switch (kind) {
+    case VFS_PIPE:        return 1;
+    case VFS_CHARDEVICE:  return 2;
+    case VFS_DIRECTORY:   return 4;
+    case VFS_BLOCKDEVICE: return 6;
+    case VFS_FILE:        return 8;
+    case VFS_SYMLINK:     return 10;
+    case VFS_SOCKET:      return 12;
+    default:              return 0;
+    }
+}
+
+static uint64_t directory_entry_inode(struct vfs_node *directory, int parent) {
+    vfs_lock_acquire();
+    struct vfs_node *node = directory;
+    if (parent && directory != process_get_root() && directory->parent) node = directory->parent;
+    while (node->link_target) node = node->link_target;
+    uint64_t inode = node->inode;
+    vfs_lock_release();
+    return inode;
+}
+
 static int64_t sys_getdents64(int fd, uint64_t user_buffer, size_t length) {
     struct file *file = fd_file(fd);
     if (!file) return -EBADF;
@@ -3165,7 +3188,17 @@ static int64_t sys_getdents64(int fd, uint64_t user_buffer, size_t length) {
     size_t written = 0;
     while (written + 24 <= length) {
         struct dirent entry;
-        int result = vfs_readdir(file->node, file->offset, &entry);
+        int result;
+        if (file->offset < 2) {
+            memset(&entry, 0, sizeof(entry));
+            entry.name[0] = '.';
+            if (file->offset) entry.name[1] = '.';
+            entry.ino = directory_entry_inode(file->node, file->offset != 0);
+            entry.type = VFS_DIRECTORY;
+            result = 1;
+        } else {
+            result = vfs_readdir(file->node, file->offset - 2, &entry);
+        }
         if (result < 0) return -EIO;
         if (result == 0) break;
         size_t name_length = strlen(entry.name) + 1;
@@ -3177,9 +3210,7 @@ static int64_t sys_getdents64(int fd, uint64_t user_buffer, size_t length) {
         *(uint64_t *)(void *)(record + 0) = entry.ino;
         *(int64_t *)(void *)(record + 8) = (int64_t)(file->offset + 1);
         *(uint16_t *)(void *)(record + 16) = (uint16_t)record_length;
-        record[18] = entry.type == VFS_DIRECTORY
-            ? 4
-            : (entry.type == VFS_CHARDEVICE ? 2 : (entry.type == VFS_SYMLINK ? 10 : 8));
+        record[18] = dirent_type(entry.type);
         memcpy(record + 19, entry.name, name_length);
         if (copy_to_user(user_buffer + written, record, record_length) != 0)
             return written ? (int64_t)written : -EFAULT;
