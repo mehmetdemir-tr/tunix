@@ -126,6 +126,7 @@ int tty_ioctl(struct tty *tty, unsigned long request, void *argument);
 int tty_foreground_pgid(const struct tty *tty);
 void tty_set_foreground_pgid(struct tty *tty, int pgid);
 uint64_t tty_session(const struct tty *tty);
+int tty_foreground_peek(const struct tty *tty);
 
 void tty_set_controlling_session(struct tty *tty, uint64_t sid, int pgid);
 void tty_release_controlling_session(struct tty *tty, uint64_t sid);

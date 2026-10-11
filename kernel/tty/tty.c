@@ -860,7 +860,13 @@ void tty_set_foreground_pgid(struct tty *tty, int pgid) {
     tty->input_interrupted = 0;
 }
 
-uint64_t tty_session(const struct tty *tty) { return tty ? tty->session : 0; }
+uint64_t tty_session(const struct tty *tty) {
+    return tty ? __atomic_load_n(&tty->session, __ATOMIC_RELAXED) : 0;
+}
+
+int tty_foreground_peek(const struct tty *tty) {
+    return tty ? __atomic_load_n(&tty->foreground_pgid, __ATOMIC_RELAXED) : 0;
+}
 
 void tty_set_controlling_session(struct tty *tty, uint64_t sid, int pgid) {
     TTY_LOCKED;

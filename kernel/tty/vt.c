@@ -200,12 +200,12 @@ void vt_process_exited(uint64_t pid, uint64_t sid) {
 }
 
 int vt_terminal_of_session(uint64_t sid, uint32_t *device, int *foreground) {
-    TTY_LOCKED;
     for (unsigned index = 1U; sid && index <= VT_COUNT; index++) {
         struct vt *vt = &terminals[index];
-        if (!vt->allocated || tty_session(vt->tty) != sid) continue;
+        if (!__atomic_load_n(&vt->allocated, __ATOMIC_ACQUIRE) || tty_session(vt->tty) != sid)
+            continue;
         *device = dev_encode(DEV_MAJOR_TTY, index);
-        *foreground = tty_foreground_pgid(vt->tty);
+        *foreground = tty_foreground_peek(vt->tty);
         return 1;
     }
     return 0;

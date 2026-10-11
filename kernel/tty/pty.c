@@ -403,11 +403,11 @@ void pty_close_endpoint(struct pty_pair *pty, int master) {
 }
 
 int pty_terminal_of(const struct process *process, uint32_t *device, int *foreground) {
-    TTY_LOCKED;
-    struct pty_pair *pty = process ? process->controlling_pty : NULL;
-    if (!pty || !pty->allocated) return 0;
+    if (!process) return 0;
+    struct pty_pair *pty = __atomic_load_n(&process->controlling_pty, __ATOMIC_ACQUIRE);
+    if (!pty || !__atomic_load_n(&pty->allocated, __ATOMIC_ACQUIRE)) return 0;
     *device = dev_encode(DEV_MAJOR_PTS, (uint32_t)pty->number);
-    *foreground = pty->foreground_pgid;
+    *foreground = __atomic_load_n(&pty->foreground_pgid, __ATOMIC_RELAXED);
     return 1;
 }
 
