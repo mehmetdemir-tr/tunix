@@ -350,7 +350,11 @@ registers and the stack pointer (`arch_switch_stack()` in
 `kernel/arch/*/switch.S`) and switches to whatever is runnable next. A wake-up
 that lands between the check and the wait finds the process already blocked, so
 it is never lost. Signals do not interrupt such a wait; the call finishes and
-the signal is taken on the way back to user mode.
+the signal is taken on the way back to user mode -- unless the wait was
+prepared with `process_prepare_wait_interruptible()`. Opening a FIFO and
+`F_SETLKW` wait that way: a signal that would be acted on wakes them, the call
+returns `ERESTARTSYS`, and `syscall_run` rewinds it so that a handler installed
+with `SA_RESTART` sees it restarted and any other handler sees `EINTR`.
 
 The older way is still there for waits that last as long as a user likes -- a
 read on an empty pipe, `poll`, `futex`: the call is rewound, the process gives

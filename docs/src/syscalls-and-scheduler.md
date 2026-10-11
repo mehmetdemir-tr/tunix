@@ -92,13 +92,17 @@ rough groups:
   `exit`/`exit_group`, `wait4`, `kill`/`tgkill`, `getpid`/`gettid`/`getppid`,
   `setpgid`/`getpgid`/`setsid`/`getsid`.
 - **Signals**: `rt_sigaction`, `rt_sigprocmask`, `rt_sigreturn`,
-  `sigaltstack`.
+  `sigaltstack`, `rt_sigpending`, `rt_sigsuspend`, `rt_sigtimedwait`,
+  `rt_sigqueueinfo`/`rt_tgsigqueueinfo`, `signalfd(4)`.
 - **Sockets**: `socket`, `connect`, `accept`/`accept4`, `bind`, `listen`,
   `send*`/`recv*`, `shutdown`, `get/setsockopt`, `socketpair`.
 - **Waiting/multiplexing**: `poll`/`ppoll`, `select`/`pselect6`,
   `epoll_create(1)`/`epoll_ctl`/`epoll_wait`/`epoll_pwait`, `nanosleep`,
   `clock_nanosleep`, `futex`.
-- **Misc**: `clock_gettime`/`clock_getres`, `gettimeofday`, `getrandom`,
+- **Timers**: `timer_create`/`timer_settime`/`timer_gettime`/
+  `timer_getoverrun`/`timer_delete`, `setitimer`/`getitimer`, `alarm`.
+- **Misc**: `clock_gettime`/`clock_getres` (including the process and thread
+  CPU-time clocks), `gettimeofday`, `getrandom`,
   `uname`, `prctl`/`arch_prctl`, `sched_yield`, `set_tid_address`,
   `set/get_robust_list`, `eventfd(2)`, `timerfd_create/settime/gettime`,
   `inotify_init(1)`/`inotify_add_watch`/`inotify_rm_watch`, `prlimit64`,
@@ -310,6 +314,39 @@ fires at the earliest sleeper's deadline (see
   `process_timer_interrupt`. A pending, unblocked signal can itself drive a
   state transition — `PROCESS_STOPPED` for job-control signals, or process
   exit for default-terminate signals — before the frame is handed back.
+
+## Signal queues
+
+Every pending signal carries the `siginfo` it was sent with, in a queue per
+thread (`signal_queue` in `struct process`). A standard signal is pending at most
+once: a second `kill` while the first waits changes nothing, as on Linux. A
+real-time signal (32 to 64) queues every instance, each with its own sender and
+value, up to `RLIMIT_SIGPENDING`, which starts at one entry per 64 pages of
+memory as Linux's does; past it `sigqueue` fails with `EAGAIN`.
+
+What fills the record:
+
+- `kill`, `tkill`, `tgkill` and `sigqueue` set `SI_USER`, `SI_TKILL` or the
+  caller's code, with its pid and real uid. A caller may only pick a code of its
+  own (`SI_QUEUE` and below) when it signals another process.
+- A fault sets `si_addr` and `SEGV_MAPERR`/`SEGV_ACCERR` (or the `SIGBUS`,
+  `SIGILL`, `SIGFPE` and `SIGTRAP` codes), and the `ucontext` gets the same
+  address (`trapno`, `err` and `cr2` on x86_64, `fault_address` on arm64). A fault on a blocked or ignored signal
+  resets it to the default action, so the process dies instead of faulting
+  forever.
+- A child's exit, stop and continue send `SIGCHLD` with `CLD_EXITED`,
+  `CLD_KILLED`, `CLD_STOPPED` or `CLD_CONTINUED`, its pid and status;
+  `SA_NOCLDSTOP` drops the last two.
+- A POSIX timer queues one preallocated entry with `SI_TIMER`; when it fires
+  again before that entry was taken, the expiry is counted as an overrun instead
+  (`si_overrun`, `timer_getoverrun`).
+
+A signal that is ignored and not blocked is dropped when it is sent, and
+setting a signal to be ignored drops what is pending. Delivery takes the
+synchronous fault signals first and then the lowest number, and a signal still
+pending when a handler returns is delivered on the way out of `rt_sigreturn`.
+Process-directed signals go to the thread group leader; stop, continue and kill
+reach every thread of the group.
 
 ## How the pieces fit together
 

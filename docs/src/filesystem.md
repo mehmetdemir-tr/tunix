@@ -250,6 +250,25 @@ and shadow it: an install script that redirected to `/dev/null` once left a
 twenty-byte regular file there, and every `>/dev/null` in the system then failed
 with `EACCES`.
 
+## Locks
+
+`flock` locks belong to the open file. `fcntl` record locks are kept per inode
+in `kernel/fs/posix_lock.c`, with Linux's two kinds of owner: a classic POSIX
+lock (`F_SETLK`, `F_SETLKW`, `F_GETLK`) belongs to the descriptor table, so
+closing any descriptor of the file drops every lock the process holds on it,
+and an open-file-description lock (`F_OFD_*`) belongs to the open file and goes
+when its last descriptor closes. Ranges split and merge the way Linux's do,
+`F_GETLK` reports the first conflicting lock and its owner's pid, and a waiter
+whose sleep would close a cycle of POSIX lock owners gets `EDEADLK`.
+
+## FIFOs
+
+Opening a FIFO waits for the other end, as POSIX asks: a reader until a writer
+has opened it and a writer until a reader has. `O_NONBLOCK` makes the reader
+return at once and the writer fail with `ENXIO`, and `O_RDWR` opens both ends
+without waiting. A read end reports `POLLHUP` only once a writer has come and
+gone. Writes of up to `PIPE_BUF` bytes to any pipe are atomic.
+
 ## Partitions
 
 `kernel/fs/partition.c` reads GPT and MBR partition tables and registers what they

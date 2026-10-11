@@ -59,6 +59,20 @@ for the terminals and tty0, major 5 for the two indirect nodes.
 claimed a terminal with `TIOCSCTTY` gets that one, and anything else gets the
 active one.
 
+Pseudo-terminals follow Linux's controlling-terminal rules. A session leader
+without a terminal acquires a slave it opens without `O_NOCTTY`, or claims one
+with `TIOCSCTTY`; claiming a terminal that another session owns fails with
+`EPERM` unless root asks to steal it. When the leader exits or gives the
+terminal up with `TIOCNOTTY`, the foreground group gets `SIGHUP` and `SIGCONT`
+and every process of the session loses the terminal. `TIOCGSID` answers only
+to the terminal's own session, and `/proc/<pid>/stat` names the terminal and its
+foreground group, so `ps` shows `pts/0` and `tty1`.
+
+Every terminal answers `TCGETS2`, `TCSETS2`, `TCSETSW2` and `TCSETSF2` as well
+as the older calls. glibc 2.42 and later implement `tcgetattr` and
+`tcsetattr` -- and so `isatty` -- with them. A speed given with `BOTHER` is
+kept as given; any other follows the `CBAUD` bits, as on Linux.
+
 One consequence worth stating: a character device that is *not* a terminal now
 answers `ENOTTY` to the termios ioctls rather than answering for the console.
 `isatty()` used to be true for `/dev/null`.
