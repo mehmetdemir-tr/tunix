@@ -690,20 +690,23 @@ struct unix_socket *unix_socket_accept(struct unix_socket *socket) {
 }
 
 static int64_t unix_socket_read_data(struct unix_socket *socket, size_t size, void *buffer,
-                                     size_t *consumed) {
-    if (consumed) *consumed = 0;
+                                     size_t *consumed, size_t *length, int peek) {
+    *consumed = 0;
+    *length = 0;
     if (socket && socket->dgram) {
         struct unix_dgram *message = socket->rx_head;
         if (!message) return -EAGAIN;
-        socket->rx_head = message->next;
-        if (!socket->rx_head) socket->rx_tail = NULL;
-        socket->rx_count--;
-        socket->rx_bytes -= message->length;
         size_t deliver = size < message->length ? size : message->length;
         if (deliver) memcpy(buffer, message->data, deliver);
         socket->last_sender = message->sender;
         memcpy(socket->last_from, message->from, sizeof(socket->last_from));
-        if (consumed) *consumed = message->length;
+        *length = message->length;
+        if (peek) return (int64_t)deliver;
+        socket->rx_head = message->next;
+        if (!socket->rx_head) socket->rx_tail = NULL;
+        socket->rx_count--;
+        socket->rx_bytes -= message->length;
+        *consumed = message->length;
         kfree(message);
         return (int64_t)deliver;
     }
@@ -719,38 +722,46 @@ static int64_t unix_socket_read_data(struct unix_socket *socket, size_t size, vo
         if (records->count == 0) return peer_write_open(socket) ? -EAGAIN : 0;
         size_t record = records->lengths[records->head];
         socket->last_sender = records->senders[records->head];
+        size_t deliver = size < record ? size : record;
+        for (size_t index = 0; index < deliver; index++)
+            out[index] = pipe->data[(pipe->read_pos + index) % pipe->capacity];
+        *length = record;
+        if (peek) return (int64_t)deliver;
         records->head = (records->head + 1) % records->capacity;
         records->count--;
-        size_t deliver = size < record ? size : record;
-        for (size_t index = 0; index < record; index++) {
-            if (index < deliver) out[index] = pipe->data[pipe->read_pos];
-            pipe->read_pos = (pipe->read_pos + 1) % pipe->capacity;
-        }
+        pipe->read_pos = (pipe->read_pos + record) % pipe->capacity;
         pipe->count -= record;
-        if (consumed) *consumed = record;
+        *consumed = record;
         return (int64_t)deliver;
     }
 
     if (pipe->count == 0) return peer_write_open(socket) ? -EAGAIN : 0;
     size_t amount = size < pipe->count ? size : pipe->count;
-    for (size_t index = 0; index < amount; index++) {
-        out[index] = pipe->data[pipe->read_pos];
-        pipe->read_pos = (pipe->read_pos + 1) % pipe->capacity;
-    }
+    for (size_t index = 0; index < amount; index++)
+        out[index] = pipe->data[(pipe->read_pos + index) % pipe->capacity];
+    *length = amount;
+    if (peek) return (int64_t)amount;
+    pipe->read_pos = (pipe->read_pos + amount) % pipe->capacity;
     pipe->count -= amount;
-    if (consumed) *consumed = amount;
+    *consumed = amount;
     return (int64_t)amount;
 }
 
-int64_t unix_socket_read(struct unix_socket *socket, size_t size, void *buffer) {
+int64_t unix_socket_recv(struct unix_socket *socket, size_t size, void *buffer, int flags,
+                         size_t *length) {
     UNIX_LOCKED;
     size_t consumed = 0;
-    int64_t result = unix_socket_read_data(socket, size, buffer, &consumed);
+    size_t full = 0;
+    int64_t result =
+        unix_socket_read_data(socket, size, buffer, &consumed, &full, flags & UNIX_MSG_PEEK);
     struct unix_ancillary_queue *ancillary = incoming_ancillary(socket);
-    if (ancillary && ancillary->count > 0) {
-        ancillary_consume(ancillary, consumed, NULL, 0, NULL);
-    }
+    if (ancillary && ancillary->count > 0) ancillary_consume(ancillary, consumed, NULL, 0, NULL);
+    if (length) *length = full;
     return result;
+}
+
+int64_t unix_socket_read(struct unix_socket *socket, size_t size, void *buffer) {
+    return unix_socket_recv(socket, size, buffer, 0, NULL);
 }
 
 static int64_t unix_socket_write_locked(struct unix_socket *socket, size_t size,
@@ -836,18 +847,39 @@ int64_t unix_socket_send_with_rights(struct unix_socket *socket, size_t size, co
     return result;
 }
 
+static void ancillary_peek(const struct unix_ancillary_queue *queue, size_t reached,
+                           struct file **files, size_t maximum_files, size_t *file_count) {
+    for (int step = 0; queue && step < queue->count; step++) {
+        const struct unix_ancillary *message = ancillary_at(queue, step);
+        if (message->offset >= reached) break;
+        for (size_t index = 0; index < message->file_count && *file_count < maximum_files;
+             index++) {
+            file_ref(message->files[index]);
+            files[(*file_count)++] = message->files[index];
+        }
+    }
+}
+
 int64_t unix_socket_recv_with_rights(struct unix_socket *socket, size_t size, void *buffer,
-                                     struct file **files, size_t maximum_files,
-                                     size_t *file_count) {
+                                     struct file **files, size_t maximum_files, size_t *file_count,
+                                     int flags, size_t *length) {
     UNIX_LOCKED;
     if (!file_count) return -EINVAL;
     *file_count = 0;
     struct unix_ancillary_queue *queue = incoming_ancillary(socket);
     size_t limited = socket && socket->seqpacket ? size : ancillary_read_limit(queue, size);
     size_t consumed = 0;
-    int64_t result = unix_socket_read_data(socket, limited, buffer, &consumed);
+    size_t full = 0;
+    int peek = flags & UNIX_MSG_PEEK;
+    int64_t result = unix_socket_read_data(socket, limited, buffer, &consumed, &full, peek);
     if (result < 0) return result;
-    ancillary_consume(queue, consumed, files, maximum_files, file_count);
+    if (length) *length = full;
+    if (peek) {
+        size_t reached = socket->seqpacket ? full : (size_t)result;
+        if (reached) ancillary_peek(queue, reached, files, maximum_files, file_count);
+    } else {
+        ancillary_consume(queue, consumed, files, maximum_files, file_count);
+    }
     return result;
 }
 
@@ -921,6 +953,11 @@ int unix_socket_shutdown(struct unix_socket *socket, int how) {
         else socket->channel->b_write_shutdown = 1;
     }
     return 0;
+}
+
+int unix_socket_keeps_boundaries(struct unix_socket *socket) {
+    UNIX_LOCKED;
+    return socket && (socket->seqpacket || socket->dgram);
 }
 
 int unix_socket_is_seqpacket(struct unix_socket *socket) {

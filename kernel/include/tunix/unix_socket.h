@@ -28,6 +28,9 @@ struct tunix_sockaddr_un {
 #define UNIX_KIND_SEQPACKET 1
 #define UNIX_KIND_DGRAM     2
 
+#define UNIX_MSG_PEEK  0x02
+#define UNIX_MSG_TRUNC 0x20
+
 struct unix_socket *unix_socket_create(int kind);
 int64_t unix_socket_sendto(struct unix_socket *socket, size_t size, const void *buffer,
                            const struct tunix_sockaddr_un *address, size_t length,
@@ -52,11 +55,14 @@ int unix_socket_connect(struct unix_socket *socket, const struct tunix_sockaddr_
                         size_t length, const char *resolved);
 struct unix_socket *unix_socket_accept(struct unix_socket *socket);
 int64_t unix_socket_read(struct unix_socket *socket, size_t size, void *buffer);
+int64_t unix_socket_recv(struct unix_socket *socket, size_t size, void *buffer, int flags,
+                         size_t *length);
 int64_t unix_socket_write(struct unix_socket *socket, size_t size, const void *buffer);
 int64_t unix_socket_send_with_rights(struct unix_socket *socket, size_t size, const void *buffer,
                                      struct file **files, size_t file_count);
 int64_t unix_socket_recv_with_rights(struct unix_socket *socket, size_t size, void *buffer,
-                                     struct file **files, size_t maximum_files, size_t *file_count);
+                                     struct file **files, size_t maximum_files, size_t *file_count,
+                                     int flags, size_t *length);
 void unix_socket_last_sender(struct unix_socket *socket, struct unix_credentials *out);
 
 int unix_socket_read_ready(struct unix_socket *socket);
@@ -64,6 +70,7 @@ size_t unix_socket_read_available(struct unix_socket *socket);
 int unix_socket_write_ready(struct unix_socket *socket);
 int unix_socket_peer_closed(struct unix_socket *socket);
 int unix_socket_is_seqpacket(struct unix_socket *socket);
+int unix_socket_keeps_boundaries(struct unix_socket *socket);
 int unix_socket_is_listener(struct unix_socket *socket);
 int unix_socket_shutdown(struct unix_socket *socket, int how);
 

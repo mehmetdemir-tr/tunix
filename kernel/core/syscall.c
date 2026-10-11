@@ -350,6 +350,7 @@ _Static_assert(offsetof(struct syscall_frame, user_rsp) == 136,
 #define SO_SNDBUF            7
 #define SO_RCVBUF            8
 #define MSG_CTRUNC           0x08
+#define MSG_TRUNC            0x20
 #define IPPROTO_IP_LEVEL     0
 #define IP_TTL_OPTION        2
 #define MSG_CMSG_CLOEXEC     0x40000000
@@ -549,6 +550,7 @@ struct linux_clone_args {
 #define EDESTADDRREQ    89
 #define ENOTSOCK        88
 #define EINPROGRESS     115
+#define ECONNREFUSED    111
 #define ERESTARTSYS     512
 
 #define FUTEX_WAIT 0
@@ -1786,6 +1788,8 @@ static int64_t sys_bind(int fd, uint64_t user_address, uint64_t length) {
             status = resolve_socket_path(&address, &resolved);
             if (status != 0) return status;
             if (vfs_lookup_nofollow(resolved)) return -EADDRINUSE;
+            status = cred_may_write_parent(resolved);
+            if (status != 0) return status;
         }
         status = unix_socket_bind(unix_value, &address, (size_t)length, resolved);
         if (status == 0 && named) {
@@ -1816,6 +1820,13 @@ static int64_t sys_listen(int fd, int backlog) {
     return inet_value ? inet_socket_listen(inet_value, backlog) : -EBADF;
 }
 
+static int socket_path_target(const char *resolved) {
+    struct vfs_node *node = vfs_lookup(resolved);
+    if (!node) return (int)lookup_errno(resolved, 1);
+    if ((node->flags & 0xFFU) != VFS_SOCKET) return -ECONNREFUSED;
+    return cred_may_path(resolved, node, CRED_WRITE);
+}
+
 static int64_t sys_connect(int fd, uint64_t user_address, uint64_t length) {
     struct unix_socket *unix_value = socket_from_fd(fd);
     if (unix_value) {
@@ -1825,6 +1836,8 @@ static int64_t sys_connect(int fd, uint64_t user_address, uint64_t length) {
         VFS_PATH_SCOPED resolved = NULL;
         if (address.path[0]) {
             status = resolve_socket_path(&address, &resolved);
+            if (status != 0) return status;
+            status = socket_path_target(resolved);
             if (status != 0) return status;
         }
         return unix_socket_connect(unix_value, &address, (size_t)length, resolved);
@@ -1934,7 +1947,8 @@ static int64_t unix_send_to_path(struct unix_socket *socket, const void *data, s
     if (address.path[0]) {
         status = resolve_socket_path(&address, &resolved);
         if (status != 0) return status;
-        if (!vfs_lookup(resolved)) return lookup_errno(resolved, 1);
+        status = socket_path_target(resolved);
+        if (status != 0) return status;
     }
     return unix_socket_sendto(socket, length, data, &address, (size_t)address_length, resolved);
 }
@@ -2027,16 +2041,18 @@ static int64_t sys_recvfrom(int fd, uint64_t user_data, size_t length, int flags
                             uint64_t user_address, uint64_t user_address_length) {
     struct unix_socket *unix_value = socket_from_fd(fd);
     if (unix_value) {
-        (void)flags;
         if (length > SOCKET_MESSAGE_MAX) length = SOCKET_MESSAGE_MAX;
         uint8_t *data = stage_message(length);
         if (!data) return -ENOMEM;
-        int64_t result = unix_socket_read(unix_value, length, data);
+        size_t full = 0;
+        int64_t result = unix_socket_recv(unix_value, length, data, flags, &full);
         if (result > 0 && copy_to_user(user_data, data, (size_t)result) != 0) result = -EFAULT;
         kfree(data);
         if (result < 0) return result;
         int64_t reported = unix_report_source(unix_value, user_address, user_address_length);
-        return reported < 0 ? reported : result;
+        if (reported < 0) return reported;
+        return (flags & MSG_TRUNC) && unix_socket_keeps_boundaries(unix_value) ? (int64_t)full
+                                                                               : result;
     }
     struct netlink_socket *netlink = netlink_socket_from_fd(fd);
     if (netlink) {
@@ -2452,8 +2468,9 @@ static int64_t sys_recvmsg(int fd, uint64_t user_message, int flags) {
     if (unix_value) {
         struct file *files[UNIX_MAX_RIGHTS] = {0};
         size_t file_count = 0;
+        size_t full = 0;
         int64_t result = unix_socket_recv_with_rights(unix_value, capacity, data, files,
-                                                      UNIX_MAX_RIGHTS, &file_count);
+                                                      UNIX_MAX_RIGHTS, &file_count, flags, &full);
         if (result < 0) {
             if (data != stage) kfree(data);
             return result;
@@ -2473,11 +2490,12 @@ static int64_t sys_recvmsg(int fd, uint64_t user_message, int flags) {
         } else {
             message.name_length = 0;
         }
-        message.flags = 0;
+        int keeps_boundaries = unix_socket_keeps_boundaries(unix_value);
+        message.flags = keeps_boundaries && full > (size_t)result ? MSG_TRUNC : 0;
         int status = write_unix_control(&message, unix_value, files, file_count, flags);
         if (status < 0) return status;
         if (copy_to_user(user_message, &message, sizeof(message)) != 0) return -EFAULT;
-        return result;
+        return (flags & MSG_TRUNC) && keeps_boundaries ? (int64_t)full : result;
     }
 
     struct netlink_socket *netlink = netlink_socket_from_fd(fd);
