@@ -7,6 +7,7 @@
 - [Syscalls and Scheduler](syscalls-and-scheduler.md)
 - [Multiprocessor](multiprocessor.md)
 - [Modules](modules.md)
+- [Rust](rust.md)
 - [The Root Filesystem](filesystem.md)
 - [Mounting](mounting.md)
 - [EventFS](eventfs.md)

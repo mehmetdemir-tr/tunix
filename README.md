@@ -12,6 +12,7 @@ A Unix-like kernel for x86_64 and aarch64 that runs an unmodified Void Linux use
 make        # kernel and disk image
 make run    # boot it in QEMU
 make test   # run the kernel tests
+make rust-test  # unit and differential tests of the Rust code
 ```
 
 `make -C kernel` builds only the kernel and its modules, into `kernel/build/`.
@@ -21,7 +22,7 @@ Log in as `root` with the password `tunix`.
 ## Layout
 
 ```
-kernel/       the kernel, with its own GNUmakefile and subprojects/
+kernel/       the kernel, with its own GNUmakefile, subprojects/ and rust/
 base-files/   files added to the Void userland
 boot/         Limine boot menus for x86_64 and aarch64
 tools/        image and sysroot builders, hardware report
