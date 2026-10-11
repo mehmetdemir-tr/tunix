@@ -42,16 +42,23 @@ TEST(io, writing_to_a_pipe_without_readers_is_epipe) {
 
 TEST(io, sigpipe_kills_a_writer_by_default) {
     int pipes[2];
+    int reader_gone[2];
     CHECK_OK(pipe(pipes));
+    CHECK_OK(pipe(reader_gone));
     pid_t child = fork();
     if (child == 0) {
         signal(SIGPIPE, SIG_DFL);
         close(pipes[0]);
+        close(reader_gone[1]);
+        char byte;
+        (void)!read(reader_gone[0], &byte, 1);
         (void)!write(pipes[1], "x", 1);
         _exit(0);
     }
     close(pipes[0]);
     close(pipes[1]);
+    close(reader_gone[0]);
+    close(reader_gone[1]);
     int status = posix_tests::wait_status(child);
     CHECK(WIFSIGNALED(status));
     CHECK_EQ(WTERMSIG(status), SIGPIPE);
