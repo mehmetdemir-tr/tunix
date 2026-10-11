@@ -1437,6 +1437,11 @@ static int64_t reopen_own_descriptor(const char *path, uint64_t flags) {
     return installed;
 }
 
+static int64_t lookup_errno(const char *path, int follow) {
+    int error = vfs_lookup_error(path, follow);
+    return error ? -error : -ENOENT;
+}
+
 static int64_t open_at(int dirfd, uint64_t user_path, uint64_t flags, uint64_t mode) {
     uint64_t supported = O_ACCMODE | O_CREAT | O_EXCL | O_NOCTTY | O_TRUNC | O_APPEND | O_NONBLOCK |
         O_DSYNC | O_ASYNC | O_DIRECT | O_LARGEFILE | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC |
@@ -1456,12 +1461,16 @@ static int64_t open_at(int dirfd, uint64_t user_path, uint64_t flags, uint64_t m
     struct vfs_node *node = (flags & O_NOFOLLOW) ? vfs_lookup_nofollow(path) : vfs_lookup(path);
     if (!node && (flags & O_CREAT)) {
         if (flags & O_DIRECTORY) return -EINVAL;
+        int missing = vfs_lookup_error(path, !(flags & O_NOFOLLOW));
+        if (missing && missing != ENOENT) return -missing;
+        size_t path_length = strlen(path);
+        if (path_length > 1 && path[path_length - 1] == '/') return -EISDIR;
         int permitted = cred_may_write_parent(path);
         if (permitted != 0) return permitted;
         node = vfs_create_file_node(path, mode_after_umask(mode));
         if (!node) return -ENOENT;
         created = 1;
-    } else if (!node) return -ENOENT;
+    } else if (!node) return lookup_errno(path, !(flags & O_NOFOLLOW));
     else if ((flags & O_CREAT) && (flags & O_EXCL)) return -EEXIST;
     else {
         uint32_t want = 0;
@@ -1907,7 +1916,7 @@ static int64_t unix_send_to_path(struct unix_socket *socket, const void *data, s
     if (address.path[0]) {
         status = resolve_socket_path(&address, &resolved);
         if (status != 0) return status;
-        if (!vfs_lookup(resolved)) return -ENOENT;
+        if (!vfs_lookup(resolved)) return lookup_errno(resolved, 1);
     }
     return unix_socket_sendto(socket, length, data, &address, (size_t)address_length, resolved);
 }
@@ -2681,7 +2690,7 @@ static int64_t sys_faccess_at(int dirfd, uint64_t user_path, int mode, int flags
     if (status != 0) return status;
     struct vfs_node *node =
         (flags & AT_SYMLINK_NOFOLLOW) ? vfs_lookup_nofollow(path) : vfs_lookup(path);
-    if (!node) return -ENOENT;
+    if (!node) return lookup_errno(path, !(flags & AT_SYMLINK_NOFOLLOW));
 
     uint32_t want = 0;
     if (mode & 4) want |= CRED_READ;
@@ -2936,7 +2945,7 @@ static int64_t stat_path(int dirfd, uint64_t user_path, uint64_t user_stat, int 
     int status = copy_path_at(dirfd, user_path, &path);
     if (status != 0) return status;
     struct vfs_node *node = follow ? vfs_lookup(path) : vfs_lookup_nofollow(path);
-    if (!node) return -ENOENT;
+    if (!node) return lookup_errno(path, follow);
     struct linux_stat stat;
     fill_stat(node, &stat);
     return copy_to_user(user_stat, &stat, sizeof(stat)) == 0 ? 0 : -EFAULT;
@@ -3019,7 +3028,7 @@ static int64_t sys_statfs(uint64_t user_path, uint64_t user_buf) {
     int status = copy_path_at(AT_FDCWD, user_path, &path);
     if (status != 0) return status;
     struct vfs_node *node = vfs_lookup(path);
-    if (!node) return -ENOENT;
+    if (!node) return lookup_errno(path, 1);
     struct linux_statfs out;
     fill_statfs(node, &out);
     return copy_to_user(user_buf, &out, sizeof(out)) == 0 ? 0 : -EFAULT;
@@ -3123,7 +3132,7 @@ static int64_t sys_statx(int dirfd, uint64_t user_path, int flags, uint32_t mask
         if (status != 0) return status;
         struct vfs_node *node =
             (flags & AT_SYMLINK_NOFOLLOW) ? vfs_lookup_nofollow(path) : vfs_lookup(path);
-        if (!node) return -ENOENT;
+        if (!node) return lookup_errno(path, !(flags & AT_SYMLINK_NOFOLLOW));
         fill_stat(node, &basic);
     }
 
@@ -3279,7 +3288,7 @@ static int64_t xattr_path(uint64_t user_path, int follow, int op, uint64_t user_
     int status = copy_path_at(AT_FDCWD, user_path, &path);
     if (status != 0) return status;
     struct vfs_node *node = follow ? vfs_lookup(path) : vfs_lookup_nofollow(path);
-    if (!node) return -ENOENT;
+    if (!node) return lookup_errno(path, follow);
     int permitted = cred_may_search(path);
     if (permitted != 0) return permitted;
     return xattr_on_node(node, op, user_name, user_value, size, flags);
@@ -3301,7 +3310,7 @@ static int64_t sys_chroot(uint64_t user_path) {
     int status = copy_path_at(AT_FDCWD, user_path, &path);
     if (status != 0) return status;
     struct vfs_node *node = vfs_lookup(path);
-    if (!node) return -ENOENT;
+    if (!node) return lookup_errno(path, 1);
     if ((node->flags & 0xFFU) != VFS_DIRECTORY) return -ENOTDIR;
     int permitted = cred_may_path(path, node, CRED_EXEC);
     if (permitted != 0) return permitted;
@@ -3325,7 +3334,7 @@ static int64_t sys_chdir(uint64_t user_path) {
     int status = copy_path_at(AT_FDCWD, user_path, &path);
     if (status != 0) return status;
     struct vfs_node *node = vfs_lookup(path);
-    if (!node) return -ENOENT;
+    if (!node) return lookup_errno(path, 1);
     if ((node->flags & 0xFFU) != VFS_DIRECTORY) return -ENOTDIR;
     int permitted = cred_may_path(path, node, CRED_EXEC);
     if (permitted != 0) return permitted;
@@ -3369,7 +3378,7 @@ static int64_t sys_readlink_at(int dirfd, uint64_t user_path, uint64_t user_buff
     }
 
     struct vfs_node *node = vfs_lookup_nofollow(path);
-    if (!node) return -ENOENT;
+    if (!node) return lookup_errno(path, 0);
     if ((node->flags & 0xFFU) != VFS_SYMLINK) return -EINVAL;
     int64_t length = (int64_t)node->length;
     if (!node->data || length < 0) return -EINVAL;
@@ -3383,7 +3392,7 @@ static int64_t sys_unlink_at(int dirfd, uint64_t user_path, int flags) {
     int status = copy_path_at(dirfd, user_path, &path);
     if (status != 0) return status;
     struct vfs_node *node = vfs_lookup_nofollow(path);
-    if (!node) return -ENOENT;
+    if (!node) return lookup_errno(path, 0);
     uint32_t kind = node->flags & 0xFFU;
     if (node->flags & VFS_READONLY) return -EROFS;
     if ((flags & AT_REMOVEDIR) && kind != VFS_DIRECTORY) return -ENOTDIR;
@@ -3413,7 +3422,7 @@ static int64_t sys_rename_at(int old_dirfd, uint64_t user_old_path, int new_dirf
     status = copy_path_at(new_dirfd, user_new_path, &new_path);
     if (status != 0) return status;
     struct vfs_node *node = vfs_lookup_nofollow(old_path);
-    if (!node) return -ENOENT;
+    if (!node) return lookup_errno(old_path, 0);
     if (node->flags & VFS_READONLY) return -EROFS;
     int permitted = cred_may_remove(old_path, node);
     if (permitted != 0) return permitted;
@@ -3438,7 +3447,7 @@ static int64_t sys_link_at(int old_dirfd, uint64_t user_old_path, int new_dirfd,
 
     struct vfs_node *node =
         (flags & AT_SYMLINK_FOLLOW) ? vfs_lookup(old_path) : vfs_lookup_nofollow(old_path);
-    if (!node) return -ENOENT;
+    if (!node) return lookup_errno(old_path, (flags & AT_SYMLINK_FOLLOW) != 0);
 
     if ((node->flags & 0xFFU) == VFS_DIRECTORY) return -EPERM;
     if (node->flags & VFS_READONLY) return -EROFS;
@@ -3554,7 +3563,7 @@ static int64_t sys_chmod_at(int dirfd, uint64_t user_path, uint32_t mode, int fl
     if (status != 0) return status;
     struct vfs_node *node =
         (flags & AT_SYMLINK_NOFOLLOW) ? vfs_lookup_nofollow(path) : vfs_lookup(path);
-    if (!node) return -ENOENT;
+    if (!node) return lookup_errno(path, !(flags & AT_SYMLINK_NOFOLLOW));
     int permitted = cred_may_search(path);
     if (permitted != 0) return permitted;
     return change_mode(node, mode);
@@ -3574,7 +3583,7 @@ static int64_t sys_chown_at(int dirfd, uint64_t user_path, uint32_t uid, uint32_
     if (status != 0) return status;
     struct vfs_node *node =
         (flags & AT_SYMLINK_NOFOLLOW) ? vfs_lookup_nofollow(path) : vfs_lookup(path);
-    if (!node) return -ENOENT;
+    if (!node) return lookup_errno(path, !(flags & AT_SYMLINK_NOFOLLOW));
     int permitted = cred_may_search(path);
     if (permitted != 0) return permitted;
     return change_owner(node, uid, gid);
@@ -3613,7 +3622,7 @@ static int64_t sys_utimens_at(int dirfd, uint64_t user_path, uint64_t user_times
         int status = copy_path_at(dirfd, user_path, &path);
         if (status != 0) return status;
         node = (flags & AT_SYMLINK_NOFOLLOW) ? vfs_lookup_nofollow(path) : vfs_lookup(path);
-        if (!node) return -ENOENT;
+        if (!node) return lookup_errno(path, !(flags & AT_SYMLINK_NOFOLLOW));
     }
     if (node->flags & VFS_READONLY) return -EROFS;
 
@@ -4333,7 +4342,7 @@ static int64_t sys_execve(struct syscall_frame *frame, uint64_t user_path, uint6
     }
 
     struct vfs_node *file = vfs_lookup(path);
-    if (!file) return -ENOENT;
+    if (!file) return lookup_errno(path, 1);
     if ((file->flags & 0xFFU) != VFS_FILE) return -EACCES;
     if ((file->mode & 0111U) == 0) return -EACCES;
     int permitted = cred_may_path(path, file, CRED_EXEC);
@@ -5290,7 +5299,7 @@ static int64_t sys_inotify_add_watch(int fd, uint64_t user_path, uint32_t mask) 
     int status = copy_path_at(AT_FDCWD, user_path, &path);
     if (status != 0) return status;
     struct vfs_node *node = vfs_lookup(path);
-    if (!node) return -ENOENT;
+    if (!node) return lookup_errno(path, 1);
     return inotify_add_watch(file->inotify, node, mask);
 }
 

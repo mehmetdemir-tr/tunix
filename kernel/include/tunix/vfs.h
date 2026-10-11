@@ -252,6 +252,7 @@ struct vfs_node *vfs_attach_link(struct vfs_node *parent, const char *name,
                                  struct vfs_node *target);
 struct vfs_node *vfs_lookup(const char *path);
 struct vfs_node *vfs_lookup_nofollow(const char *path);
+int vfs_lookup_error(const char *path, int follow_final);
 struct vfs_node *vfs_mkdir_p(const char *path);
 struct vfs_node *vfs_create_file(const char *path, const void *data, uint64_t length,
                                  uint32_t flags, int copy_data);

@@ -9,6 +9,7 @@
 
 #define EPERM        1
 #define ENOENT       2
+#define ENOTDIR      20
 #define EACCES       13
 #define EINVAL       22
 #define EROFS        30
@@ -73,6 +74,11 @@ int cred_may(const struct vfs_node *node, uint32_t want) {
     return -EACCES;
 }
 
+static int missing(const char *path) {
+    int error = vfs_lookup_error(path, 1);
+    return error ? -error : -ENOENT;
+}
+
 int cred_may_search(const char *path) {
     const struct credentials *cred = cred_current();
     if (!cred || cred->fsuid == 0 || !path || path[0] != '/') return 0;
@@ -88,7 +94,7 @@ int cred_may_search(const char *path) {
         prefix[index] = '\0';
         struct vfs_node *directory = vfs_lookup(prefix);
         prefix[index] = '/';
-        if (!directory) return -ENOENT;
+        if (!directory) return missing(prefix);
         int status = cred_may(directory, CRED_EXEC);
         if (status != 0) return status;
     }
@@ -101,23 +107,35 @@ int cred_may_path(const char *path, const struct vfs_node *node, uint32_t want) 
     return cred_may(node, want);
 }
 
-static struct vfs_node *parent_of(const char *path) {
+static struct vfs_node *parent_of(const char *path, int *error) {
     VFS_PATH_SCOPED buffer = vfs_path_buffer();
     size_t length = strlen(path);
+    if (error) *error = -ENOENT;
     if (!buffer || length >= VFS_PATH_MAX) return NULL;
     memcpy(buffer, path, length + 1);
+    while (length > 1 && buffer[length - 1] == '/') length--;
     while (length > 1 && buffer[length - 1] != '/') length--;
     if (length > 1) length--;
     buffer[length ? length : 1] = '\0';
-    return vfs_lookup(buffer);
+    struct vfs_node *parent = vfs_lookup(buffer);
+    if (!parent) {
+        if (error) *error = missing(buffer);
+        return NULL;
+    }
+    if ((parent->flags & 0xFFU) != VFS_DIRECTORY) {
+        if (error) *error = -ENOTDIR;
+        return NULL;
+    }
+    return parent;
 }
 
 int cred_may_write_parent(const char *path) {
     const struct credentials *cred = cred_current();
     int status = cred_may_search(path);
     if (status != 0) return status;
-    struct vfs_node *parent = parent_of(path);
-    if (!parent) return -ENOENT;
+    int error;
+    struct vfs_node *parent = parent_of(path, &error);
+    if (!parent) return error;
     if (parent->flags & VFS_READONLY) return -EROFS;
     if (!cred || cred->fsuid == 0) return 0;
     return cred_may(parent, CRED_WRITE | CRED_EXEC);
@@ -128,7 +146,7 @@ int cred_may_remove(const char *path, const struct vfs_node *node) {
     if (status != 0) return status;
     const struct credentials *cred = cred_current();
     if (!cred || cred->fsuid == 0) return 0;
-    struct vfs_node *parent = parent_of(path);
+    struct vfs_node *parent = parent_of(path, NULL);
     if (!parent || !(parent->mode & MODE_STICKY)) return 0;
     if (cred->fsuid == node->uid || cred->fsuid == parent->uid) return 0;
     return -EPERM;

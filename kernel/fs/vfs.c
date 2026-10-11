@@ -539,31 +539,49 @@ static int symlink_path(struct vfs_node *directory, const char *target, const ch
     return 0;
 }
 
-static struct vfs_node *lookup_internal(const char *path, int follow_final) {
-    if (!path || path[0] != '/' || !vfs_root) return NULL;
+#define LOOKUP_ENOENT       2
+#define LOOKUP_ENOTDIR      20
+#define LOOKUP_ENAMETOOLONG 36
+#define LOOKUP_ELOOP        40
+
+static struct vfs_node *lookup_failed(int *error, int code) {
+    if (error) *error = code;
+    return NULL;
+}
+
+static struct vfs_node *lookup_internal(const char *path, int follow_final, int *error) {
+    if (error) *error = 0;
+    if (!path || path[0] != '/' || !vfs_root) return lookup_failed(error, LOOKUP_ENOENT);
     VFS_PATH_SCOPED spare = NULL;
     VFS_PATH_SCOPED held = NULL;
     struct vfs_node *current = cross_mounts(vfs_root);
     char component[VFS_NAME_MAX + 1];
     const char *cursor = path;
     unsigned followed = 0;
+    int directory_required = 0;
     while (*cursor) {
         cursor = next_component(cursor, component);
-        if (!cursor) return NULL;
-        if (!component[0] || strcmp(component, ".") == 0) continue;
+        if (!cursor) return lookup_failed(error, LOOKUP_ENAMETOOLONG);
+        if (!component[0]) continue;
+        if ((current->flags & 0xFFU) != VFS_DIRECTORY) return lookup_failed(error, LOOKUP_ENOTDIR);
+        int final_component = *cursor == '\0';
+        if (final_component && cursor[-1] == '/') directory_required = 1;
+        if (strcmp(component, ".") == 0) continue;
         if (strcmp(component, "..") == 0) {
             if (current != process_get_root() && current->parent) current = current->parent;
             continue;
         }
 
         struct vfs_node *next = vfs_find_child(current, component);
-        if (!next) return NULL;
-        int final_component = *cursor == '\0';
-        if ((next->flags & 0xFFU) == VFS_SYMLINK && (follow_final || !final_component)) {
+        if (!next) return lookup_failed(error, LOOKUP_ENOENT);
+        if ((next->flags & 0xFFU) == VFS_SYMLINK &&
+            (follow_final || !final_component || directory_required)) {
             const char *target = (const char *)next->data;
-            if (!target || !target[0] || ++followed > VFS_SYMLINK_MAX_DEPTH) return NULL;
-            if (!spare && !(spare = vfs_path_buffer())) return NULL;
-            if (symlink_path(current, target, cursor, spare) != 0) return NULL;
+            if (!target || !target[0]) return lookup_failed(error, LOOKUP_ENOENT);
+            if (++followed > VFS_SYMLINK_MAX_DEPTH) return lookup_failed(error, LOOKUP_ELOOP);
+            if (!spare && !(spare = vfs_path_buffer())) return lookup_failed(error, LOOKUP_ENOENT);
+            if (symlink_path(current, target, cursor, spare) != 0)
+                return lookup_failed(error, LOOKUP_ENAMETOOLONG);
             char *swap = held;
             held = spare;
             spare = swap;
@@ -573,17 +591,26 @@ static struct vfs_node *lookup_internal(const char *path, int follow_final) {
         }
         current = next;
     }
+    if (directory_required && (current->flags & 0xFFU) != VFS_DIRECTORY)
+        return lookup_failed(error, LOOKUP_ENOTDIR);
     return current;
 }
 
 struct vfs_node *vfs_lookup(const char *path) {
     VFS_LOCKED;
-    return lookup_internal(path, 1);
+    return lookup_internal(path, 1, NULL);
 }
 
 struct vfs_node *vfs_lookup_nofollow(const char *path) {
     VFS_LOCKED;
-    return lookup_internal(path, 0);
+    return lookup_internal(path, 0, NULL);
+}
+
+int vfs_lookup_error(const char *path, int follow_final) {
+    VFS_LOCKED;
+    int error = 0;
+    (void)lookup_internal(path, follow_final, &error);
+    return error;
 }
 
 struct vfs_node *vfs_mkdir_p(const char *path) {
