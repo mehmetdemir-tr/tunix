@@ -43,8 +43,10 @@ check:
 	$(MAKE) kernel modules BUILD=$(BUILD)/check/debug LIMINE_DIR=$(LIMINE_DIR) UACPI_DIR=$(UACPI_DIR) RUST_HOME=$(RUST_HOME) KERNEL_CFLAGS_EXTRA=-DTUNIX_DEBUG_LOGS=1
 	$(MAKE) kernel modules BUILD=$(BUILD)/check/timings LIMINE_DIR=$(LIMINE_DIR) UACPI_DIR=$(UACPI_DIR) RUST_HOME=$(RUST_HOME) KERNEL_CFLAGS_EXTRA=-DTUNIX_BOOT_TIMINGS=1
 
-$(KERNEL): $(KERNEL_OBJECTS) $(UACPI_OBJECTS) arch/x86_64/linker.ld
-	$(CC) $(KERNEL_LDFLAGS) $(KERNEL_OBJECTS) $(UACPI_OBJECTS) -o $@
+$(KERNEL): $(KERNEL_OBJECTS) $(UACPI_OBJECTS) $(RUST_X86_LIB) arch/x86_64/linker.ld
+	$(CC) $(KERNEL_LDFLAGS) $(KERNEL_OBJECTS) $(UACPI_OBJECTS) $(RUST_X86_LIB) -o $@.tmp
+	$(call rust_panic_free,nm,$@.tmp)
+	mv $@.tmp $@
 
 $(BUILD)/kernel/%.c.o: %.c | $(LIMINE_HEADER) $(UACPI_STAMP)
 	@mkdir -p $(dir $@)
@@ -100,6 +102,7 @@ distclean:
 
 AARCH64_CC      ?= aarch64-linux-gnu-gcc
 AARCH64_OBJCOPY ?= aarch64-linux-gnu-objcopy
+AARCH64_NM      ?= aarch64-linux-gnu-nm
 
 AARCH64_CORE_BUILD := $(BUILD)/aarch64-core
 AARCH64_CORE_CFLAGS := -std=gnu11 -Wall -Wextra -Werror -ffreestanding \
@@ -119,10 +122,12 @@ AARCH64_CORE_IMAGE := $(BUILD)/kernel-aarch64-core.img
 .PHONY: aarch64-core
 aarch64-core: $(AARCH64_CORE_IMAGE)
 
-$(AARCH64_CORE_KERNEL): $(AARCH64_CORE_OBJECTS) arch/aarch64/linker.ld
+$(AARCH64_CORE_KERNEL): $(AARCH64_CORE_OBJECTS) $(RUST_ARM_LIB) arch/aarch64/linker.ld
 	$(AARCH64_CC) -nostdlib -static -Wl,-T,arch/aarch64/linker.ld \
 		-Wl,--gc-sections -Wl,--build-id=none -Wl,-z,max-page-size=0x1000 \
-		$(AARCH64_CORE_OBJECTS) -lgcc -o $@
+		$(AARCH64_CORE_OBJECTS) $(RUST_ARM_LIB) -lgcc -o $@.tmp
+	$(call rust_panic_free,$(AARCH64_NM),$@.tmp)
+	mv $@.tmp $@
 
 $(AARCH64_CORE_IMAGE): $(AARCH64_CORE_KERNEL)
 	$(AARCH64_OBJCOPY) -O binary $< $@
