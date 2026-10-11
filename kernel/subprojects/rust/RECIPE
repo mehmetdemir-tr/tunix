@@ -1,0 +1,63 @@
+RUST_VERSION    := $(shell sed -n 's/^channel = "\(.*\)"/\1/p' rust/rust-toolchain.toml)
+RUSTUP_VERSION  := 1.29.1
+RUST_HOST       := $(shell uname -m)-unknown-linux-gnu
+RUSTUP_SHA256_x86_64-unknown-linux-gnu  := dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71
+RUSTUP_SHA256_aarch64-unknown-linux-gnu := 15f6e4ce9f583b929c996c91562bad6d4454f3281de858b02cdfdef615fac433
+RUST_RECIPE     := $(lastword $(MAKEFILE_LIST))
+RUST_HOME       ?= $(abspath $(BUILD)/rust)
+RUST_STAMP      := $(RUST_HOME)/.version-$(RUST_VERSION)
+RUST_ENV        := RUSTUP_HOME=$(RUST_HOME)/rustup CARGO_HOME=$(RUST_HOME)/cargo \
+	RUSTUP_TOOLCHAIN=$(RUST_VERSION) CARGO_TARGET_DIR=$(abspath $(BUILD)/rust-target)
+CARGO           := env $(RUST_ENV) $(RUST_HOME)/cargo/bin/cargo
+RUST_SOURCES     = $(shell find rust -name '*.rs' -o -name '*.toml' -o -name 'Cargo.lock' -o -name '*.c')
+RUST_X86_TARGET := x86_64-unknown-none
+RUST_ARM_TARGET := aarch64-unknown-none-softfloat
+RUST_X86_LIB    := $(BUILD)/rust-target/$(RUST_X86_TARGET)/release/libtunix_elf.a
+RUST_ARM_LIB    := $(BUILD)/rust-target/$(RUST_ARM_TARGET)/release/libtunix_elf.a
+
+$(RUST_STAMP):
+	rm -rf $(RUST_HOME)
+	mkdir -p $(RUST_HOME)
+	curl -fL --retry 3 -o $(RUST_HOME)/rustup-init \
+		https://static.rust-lang.org/rustup/archive/$(RUSTUP_VERSION)/$(RUST_HOST)/rustup-init
+	echo "$(RUSTUP_SHA256_$(RUST_HOST))  $(RUST_HOME)/rustup-init" | sha256sum -c -
+	chmod +x $(RUST_HOME)/rustup-init
+	env $(RUST_ENV) $(RUST_HOME)/rustup-init -y --no-modify-path --profile minimal \
+		--default-toolchain $(RUST_VERSION) -c rustfmt -c clippy \
+		-t $(RUST_X86_TARGET) -t $(RUST_ARM_TARGET)
+	@touch $@
+
+$(RUST_X86_LIB): $(RUST_SOURCES) $(RUST_RECIPE) | $(RUST_STAMP)
+	cd rust && $(CARGO) build --locked --release --target $(RUST_X86_TARGET)
+
+$(RUST_ARM_LIB): $(RUST_SOURCES) $(RUST_RECIPE) | $(RUST_STAMP)
+	cd rust && $(CARGO) build --locked --release --target $(RUST_ARM_TARGET)
+
+RUST_PANIC_SYMBOLS := rust_begin_unwind|panicking|panic_bounds_check|slice_index_fail|unwrap_failed
+
+rust_panic_free = @if $(1) $(2) | grep -Eq '$(RUST_PANIC_SYMBOLS)'; then \
+	echo "$(2): Rust code can panic, the kernel must not link it" >&2; rm -f $(2); exit 1; fi
+
+RUST_TEST_CORPUS ?= /usr/bin:/usr/lib:/usr/aarch64-linux-gnu
+RUST_TEST_CORPUS_MINIMUM ?= 1000
+RUST_FUZZ_ITERATIONS ?= 200000
+RUST_FUZZ_SEED ?= 1
+
+.PHONY: rust-test rust-lint rust-format rust-format-check
+rust-test: | $(RUST_STAMP)
+	cd rust && $(CARGO) test --locked --workspace
+	cd rust && env TUNIX_ELF_CORPUS='$(RUST_TEST_CORPUS)' \
+		TUNIX_ELF_CORPUS_MINIMUM=$(RUST_TEST_CORPUS_MINIMUM) \
+		TUNIX_ELF_FUZZ_ITERATIONS=$(RUST_FUZZ_ITERATIONS) TUNIX_ELF_FUZZ_SEED=$(RUST_FUZZ_SEED) \
+		$(CARGO) test --locked --release -p tunix-elf-check -- --nocapture
+
+rust-lint: | $(RUST_STAMP)
+	cd rust && $(CARGO) clippy --locked --workspace --all-targets -- -D warnings
+	cd rust && $(CARGO) clippy --locked --release --target $(RUST_X86_TARGET) -- -D warnings
+	cd rust && $(CARGO) clippy --locked --release --target $(RUST_ARM_TARGET) -- -D warnings
+
+rust-format: | $(RUST_STAMP)
+	cd rust && $(CARGO) fmt --all
+
+rust-format-check: | $(RUST_STAMP)
+	cd rust && $(CARGO) fmt --all --check

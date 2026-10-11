@@ -15,6 +15,7 @@ LIMINE_DIR     := $(BUILD)/limine
 LIMINE_HEADER  := $(LIMINE_DIR)/limine.h
 
 include subprojects/uacpi/RECIPE
+include subprojects/rust/RECIPE
 
 KERNEL_CFLAGS := -std=gnu11 -Wall -Wextra -Werror -ffreestanding \
 	-fno-stack-protector -fno-pic -fno-pie -fno-builtin \
@@ -34,12 +35,12 @@ KERNEL_DEPS    := $(KERNEL_OBJECTS:.o=.d)
 .PHONY: all kernel fetch check clean distclean
 all: kernel modules
 kernel: $(KERNEL)
-fetch: $(LIMINE_HEADER) $(UACPI_STAMP)
+fetch: $(LIMINE_HEADER) $(UACPI_STAMP) $(RUST_STAMP)
 
 check:
-	$(MAKE) kernel modules BUILD=$(BUILD)/check/default LIMINE_DIR=$(LIMINE_DIR) UACPI_DIR=$(UACPI_DIR)
-	$(MAKE) kernel modules BUILD=$(BUILD)/check/debug LIMINE_DIR=$(LIMINE_DIR) UACPI_DIR=$(UACPI_DIR) KERNEL_CFLAGS_EXTRA=-DTUNIX_DEBUG_LOGS=1
-	$(MAKE) kernel modules BUILD=$(BUILD)/check/timings LIMINE_DIR=$(LIMINE_DIR) UACPI_DIR=$(UACPI_DIR) KERNEL_CFLAGS_EXTRA=-DTUNIX_BOOT_TIMINGS=1
+	$(MAKE) kernel modules BUILD=$(BUILD)/check/default LIMINE_DIR=$(LIMINE_DIR) UACPI_DIR=$(UACPI_DIR) RUST_HOME=$(RUST_HOME)
+	$(MAKE) kernel modules BUILD=$(BUILD)/check/debug LIMINE_DIR=$(LIMINE_DIR) UACPI_DIR=$(UACPI_DIR) RUST_HOME=$(RUST_HOME) KERNEL_CFLAGS_EXTRA=-DTUNIX_DEBUG_LOGS=1
+	$(MAKE) kernel modules BUILD=$(BUILD)/check/timings LIMINE_DIR=$(LIMINE_DIR) UACPI_DIR=$(UACPI_DIR) RUST_HOME=$(RUST_HOME) KERNEL_CFLAGS_EXTRA=-DTUNIX_BOOT_TIMINGS=1
 
 $(KERNEL): $(KERNEL_OBJECTS) $(UACPI_OBJECTS) arch/x86_64/linker.ld
 	$(CC) $(KERNEL_LDFLAGS) $(KERNEL_OBJECTS) $(UACPI_OBJECTS) -o $@
@@ -90,7 +91,7 @@ acpi-test: $(UACPI_STAMP)
 	$(ACPI_TEST_DIR)/run $(ACPI_TEST_DIR)/machine.aml
 
 clean:
-	rm -rf $(BUILD)/kernel $(BUILD)/modules $(BUILD)/uacpi-objects $(KERNEL)
+	rm -rf $(BUILD)/kernel $(BUILD)/modules $(BUILD)/uacpi-objects $(BUILD)/rust-target $(KERNEL)
 
 distclean:
 	rm -rf $(BUILD)
@@ -158,7 +159,7 @@ LINT_FLAGS := -std=gnu11 -ffreestanding -m64 -mcmodel=kernel -mgeneral-regs-only
 	-mno-red-zone -Iinclude -I$(LIMINE_DIR) -I$(UACPI_DIR)/include
 
 .PHONY: lint
-lint: | $(LIMINE_HEADER) $(UACPI_STAMP)
+lint: rust-lint | $(LIMINE_HEADER) $(UACPI_STAMP)
 	@printf '%s\n' $(filter %.c,$(KERNEL_SOURCES)) | \
 		xargs -P$(NPROC) -I{} $(CLANG_TIDY) --quiet {} -- $(LINT_FLAGS)
 	@printf '%s\n' $(MODULE_SOURCES) | \

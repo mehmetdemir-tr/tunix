@@ -29,7 +29,8 @@ endif
 MODULE_SOURCES := $(wildcard kernel/modules/*.c) $(wildcard kernel/modules/x86_64/*.c)
 MODULES := $(patsubst kernel/modules/%.c,$(KERNEL_BUILD)/modules/%.ko,$(MODULE_SOURCES))
 
-KERNEL_TARGETS := kernel modules check aarch64-core modules-aarch64 acpi-test lint
+KERNEL_TARGETS := kernel modules check aarch64-core modules-aarch64 acpi-test lint rust-test \
+	rust-lint rust-format rust-format-check
 
 .PHONY: all clean distclean kernel-fetch FORCE $(KERNEL_TARGETS)
 all: image
@@ -294,10 +295,10 @@ FORMAT_SOURCES := $(shell find kernel testsuites utils -path kernel/subprojects 
 	-path $(KERNEL_BUILD) -prune -o \( -name '*.[ch]' -o -name '*.[ch]pp' \) -print)
 
 .PHONY: format format-check
-format:
+format: rust-format
 	@$(CLANG_FORMAT) -i $(FORMAT_SOURCES)
 
-format-check:
+format-check: rust-format-check
 	@$(CLANG_FORMAT) --dry-run --Werror $(FORMAT_SOURCES)
 
 HWREPORT_IMAGE := $(BUILD)/hwreport.img

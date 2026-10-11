@@ -1,0 +1,16 @@
+[workspace]
+resolver = "3"
+members = ["elf", "elf-check"]
+default-members = ["elf"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+publish = false
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+codegen-units = 1
+lto = true
+debug = false
