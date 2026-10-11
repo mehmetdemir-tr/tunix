@@ -1115,7 +1115,8 @@ static void describe_file(const struct file *file, char *output, size_t capacity
     const char *kind = "anon_inode:[unknown]";
     switch (file->kind) {
     case FILE_KIND_PIPE_READ:
-    case FILE_KIND_PIPE_WRITE:     kind = "pipe:[0]"; break;
+    case FILE_KIND_PIPE_WRITE:
+    case FILE_KIND_PIPE_DUPLEX:    kind = "pipe:[0]"; break;
     case FILE_KIND_SOCKET:
     case FILE_KIND_INET_SOCKET:
     case FILE_KIND_NETLINK_SOCKET: kind = "socket:[0]"; break;

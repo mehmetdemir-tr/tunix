@@ -12,6 +12,7 @@ static int pipe_resize_locked(struct pipe_buffer *pipe, size_t capacity);
 #include <tunix/process.h>
 
 #define EAGAIN 11
+#define EINTR  4
 
 int pipe_buffer_init(struct pipe_buffer *pipe, size_t capacity) {
     memset(pipe, 0, sizeof(*pipe));
@@ -91,9 +92,41 @@ static void pipe_leave(struct pipe_buffer *pipe) { lock_release(&pipe->lock); }
 
 void pipe_attach_end(struct pipe_buffer *pipe, int write_end) {
     pipe_enter(pipe);
-    if (write_end) pipe->writers++;
-    else pipe->readers++;
+    if (write_end) {
+        pipe->writers++;
+        pipe->writer_opens++;
+    } else {
+        pipe->readers++;
+        pipe->reader_opens++;
+    }
     pipe_leave(pipe);
+    process_wake_all(&pipe->open_wait);
+}
+
+static int peer_arrived(struct pipe_buffer *pipe, int write_end, uint32_t seen) {
+    pipe_enter(pipe);
+    int arrived = write_end ? pipe->readers > 0 || pipe->reader_opens != seen
+                            : pipe->writers > 0 || pipe->writer_opens != seen;
+    pipe_leave(pipe);
+    return arrived;
+}
+
+int pipe_wait_for_peer(struct pipe_buffer *pipe, int write_end) {
+    pipe_enter(pipe);
+    uint32_t seen = write_end ? pipe->reader_opens : pipe->writer_opens;
+    pipe_leave(pipe);
+    for (;;) {
+        int status = process_prepare_wait_interruptible(&pipe->open_wait, 0);
+        if (status != 0) return status;
+        if (peer_arrived(pipe, write_end, seen)) {
+            process_finish_wait();
+            return 0;
+        }
+        process_wait();
+        process_finish_wait();
+        if (peer_arrived(pipe, write_end, seen)) return 0;
+        if (process_wait_interrupted()) return -EINTR;
+    }
 }
 
 int64_t pipe_read(struct pipe_buffer *pipe, size_t size, void *buffer) {
@@ -129,7 +162,7 @@ int64_t pipe_write(struct pipe_buffer *pipe, size_t size, const void *buffer) {
 
 static int64_t pipe_write_locked(struct pipe_buffer *pipe, size_t size, const void *buffer) {
     size_t available = pipe->capacity - pipe->count;
-    if (available == 0) return -EAGAIN;
+    if (available == 0 || (size <= PIPE_ATOMIC_WRITE && available < size)) return -EAGAIN;
     const uint8_t *in = (const uint8_t *)buffer;
     size_t amount = size < available ? size : available;
     size_t first = pipe->capacity - pipe->write_pos;

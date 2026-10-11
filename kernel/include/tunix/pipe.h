@@ -6,6 +6,7 @@
 #include <tunix/spinlock.h>
 
 #define PIPE_CAPACITY          65536
+#define PIPE_ATOMIC_WRITE      4096
 #define PIPE_MAX_CAPACITY      (1024U * 1024U)
 #define PIPE_ROOT_MAX_CAPACITY (64U * 1024U * 1024U)
 
@@ -19,9 +20,12 @@ struct pipe_buffer {
     size_t count;
     int readers;
     int writers;
+    uint32_t reader_opens;
+    uint32_t writer_opens;
     int named;
     char data_wait;
     char space_wait;
+    char open_wait;
     spinlock_t lock;
 };
 
@@ -35,5 +39,6 @@ int64_t pipe_read(struct pipe_buffer *pipe, size_t size, void *buffer);
 int64_t pipe_write(struct pipe_buffer *pipe, size_t size, const void *buffer);
 void pipe_release(struct pipe_buffer *pipe, int write_end);
 void pipe_attach_end(struct pipe_buffer *pipe, int write_end);
+int pipe_wait_for_peer(struct pipe_buffer *pipe, int write_end);
 
 #endif

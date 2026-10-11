@@ -854,7 +854,7 @@ void syscall_init(void) { nx_enabled = 1; }
 
 static int write_stages_large(const struct file *file) {
     if (!file) return 0;
-    if (file->kind == FILE_KIND_SOCKET || file->kind == FILE_KIND_PIPE_WRITE) return 1;
+    if (file->kind == FILE_KIND_SOCKET || file_pipe_writes(file)) return 1;
     return file->kind == FILE_KIND_VFS && file->node && (file->node->flags & 0xFFU) == VFS_FILE;
 }
 
@@ -1531,6 +1531,17 @@ static int64_t open_at(int dirfd, uint64_t user_path, uint64_t flags, uint64_t m
         return -ENOMEM;
     }
     if (flags & O_APPEND) file->offset = node->length;
+    if ((file->kind == FILE_KIND_PIPE_READ || file->kind == FILE_KIND_PIPE_WRITE) && file->pipe) {
+        int writer = file->kind == FILE_KIND_PIPE_WRITE;
+        int peers = writer ? file->pipe->readers : file->pipe->writers;
+        int waited = 0;
+        if (!peers && (flags & O_NONBLOCK)) waited = writer ? -ENXIO : 0;
+        else if (!peers) waited = pipe_wait_for_peer(file->pipe, writer);
+        if (waited != 0) {
+            file_unref(file);
+            return waited == -EINTR ? -ERESTARTSYS : waited;
+        }
+    }
     int fd = process_install_file_flags(process_current(), file, 0,
                                         (flags & O_CLOEXEC) ? PROCESS_FD_CLOEXEC : 0);
     if (fd < 0) {
@@ -1580,9 +1591,7 @@ static int64_t sys_dup_to(int oldfd, int newfd, int cloexec, int reject_same) {
 }
 
 static int64_t pipe_size_control(struct file *file, int set, uint64_t wanted) {
-    if (!file || (file->kind != FILE_KIND_PIPE_READ && file->kind != FILE_KIND_PIPE_WRITE) ||
-        !file->pipe)
-        return -EBADF;
+    if (!file || !file_is_pipe(file) || !file->pipe) return -EBADF;
     if (!set) return (int64_t)file->pipe->capacity;
     const struct credentials *cred = cred_current();
     uint64_t ceiling = cred && cred->euid ? PIPE_MAX_CAPACITY : PIPE_ROOT_MAX_CAPACITY;
@@ -2844,7 +2853,9 @@ static int64_t sys_ioctl(int fd, unsigned long request, uint64_t user_argument) 
         int32_t available = 0;
         switch (file->kind) {
         case FILE_KIND_SOCKET: available = (int32_t)unix_socket_read_available(file->socket); break;
-        case FILE_KIND_PIPE_READ: available = file->pipe ? (int32_t)file->pipe->count : 0; break;
+        case FILE_KIND_PIPE_READ:
+        case FILE_KIND_PIPE_WRITE:
+        case FILE_KIND_PIPE_DUPLEX: available = file->pipe ? (int32_t)file->pipe->count : 0; break;
         case FILE_KIND_VFS:
             if (!file->node || (file->node->flags & 0xFFU) != VFS_FILE) return -ENOTTY;
             available = file->node->length > file->offset
@@ -3058,7 +3069,8 @@ static int fill_stat_nodeless(struct file *file, struct linux_stat *stat) {
     uint64_t size = 0;
     switch (file->kind) {
     case FILE_KIND_PIPE_READ:
-    case FILE_KIND_PIPE_WRITE:     type = 0010000U; break;
+    case FILE_KIND_PIPE_WRITE:
+    case FILE_KIND_PIPE_DUPLEX:    type = 0010000U; break;
     case FILE_KIND_SOCKET:
     case FILE_KIND_INET_SOCKET:
     case FILE_KIND_NETLINK_SOCKET: type = 0140000U; break;

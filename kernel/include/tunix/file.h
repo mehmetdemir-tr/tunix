@@ -41,6 +41,7 @@ struct io_uring_context;
 #define FILE_KIND_EVENTFS        18
 #define FILE_KIND_IO_URING       19
 #define FILE_KIND_PIDFD          20
+#define FILE_KIND_PIPE_DUPLEX    21
 
 struct file {
     struct mutex lock;
@@ -69,7 +70,21 @@ struct file {
     int flock_type;
     uint32_t edge_generation;
     uint32_t notify_seen;
+    uint32_t pipe_writers_seen;
 };
+
+static inline int file_is_pipe(const struct file *file) {
+    return file->kind == FILE_KIND_PIPE_READ || file->kind == FILE_KIND_PIPE_WRITE ||
+        file->kind == FILE_KIND_PIPE_DUPLEX;
+}
+
+static inline int file_pipe_reads(const struct file *file) {
+    return file->kind == FILE_KIND_PIPE_READ || file->kind == FILE_KIND_PIPE_DUPLEX;
+}
+
+static inline int file_pipe_writes(const struct file *file) {
+    return file->kind == FILE_KIND_PIPE_WRITE || file->kind == FILE_KIND_PIPE_DUPLEX;
+}
 
 int64_t file_pread(struct file *file, uint64_t offset, size_t size, void *buffer);
 int64_t file_pwrite(struct file *file, uint64_t offset, size_t size, const void *buffer);

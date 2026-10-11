@@ -52,7 +52,7 @@ struct file *file_open_node(struct vfs_node *node, uint32_t flags) {
     vfs_node_ref(node);
 
     if ((node->flags & 0xFFU) == VFS_PIPE) {
-        int write_end = (flags & 3U) != 0;
+        uint32_t access = flags & 3U;
         vfs_lock_acquire();
         if (!node->fifo) node->fifo = pipe_buffer_create_named();
         struct pipe_buffer *fifo = node->fifo;
@@ -62,9 +62,17 @@ struct file *file_open_node(struct vfs_node *node, uint32_t flags) {
             kfree(file);
             return NULL;
         }
-        file->kind = write_end ? FILE_KIND_PIPE_WRITE : FILE_KIND_PIPE_READ;
         file->pipe = fifo;
-        pipe_attach_end(fifo, write_end);
+        if (access == 2U) {
+            file->kind = FILE_KIND_PIPE_DUPLEX;
+            pipe_attach_end(fifo, 0);
+            pipe_attach_end(fifo, 1);
+        } else {
+            file->kind = access ? FILE_KIND_PIPE_WRITE : FILE_KIND_PIPE_READ;
+            if (!access)
+                file->pipe_writers_seen = __atomic_load_n(&fifo->writer_opens, __ATOMIC_ACQUIRE);
+            pipe_attach_end(fifo, access != 0);
+        }
         return file;
     }
     if (node->flags & VFS_EVENTSTREAM) {
@@ -233,7 +241,7 @@ struct file *file_create_pty_endpoint(struct pty_pair *pty, int master, struct v
 
 const void *file_read_wait_channel(struct file *file) {
     if (file && file->kind == FILE_KIND_EVENTFS) return eventfs_wait_channel(file->eventfs);
-    if (file && file->kind == FILE_KIND_PIPE_READ && file->pipe) return &file->pipe->data_wait;
+    if (file && file_pipe_reads(file) && file->pipe) return &file->pipe->data_wait;
 
     if (file && file->kind == FILE_KIND_VFS && file->node && file->node->read == vt_node_read)
         return vt_input_wait_channel();
@@ -241,7 +249,7 @@ const void *file_read_wait_channel(struct file *file) {
 }
 
 const void *file_write_wait_channel(struct file *file) {
-    if (file && file->kind == FILE_KIND_PIPE_WRITE && file->pipe) return &file->pipe->space_wait;
+    if (file && file_pipe_writes(file) && file->pipe) return &file->pipe->space_wait;
     return NULL;
 }
 
@@ -306,8 +314,8 @@ void file_unref(struct file *file) {
         file->node->posix_lock_pid = 0;
         file->node->posix_lock_write = 0;
     }
-    if ((file->kind == FILE_KIND_PIPE_READ || file->kind == FILE_KIND_PIPE_WRITE) && file->pipe)
-        pipe_release(file->pipe, file->kind == FILE_KIND_PIPE_WRITE);
+    if (file->kind == FILE_KIND_PIPE_DUPLEX && file->pipe) pipe_release(file->pipe, 0);
+    if (file_is_pipe(file) && file->pipe) pipe_release(file->pipe, file_pipe_writes(file));
 
     if (file->kind == FILE_KIND_VFS && file->node && file->node->file_ioctl == drm_file_ioctl)
         drm_file_close(file);
@@ -376,7 +384,7 @@ int64_t file_read(struct file *file, size_t size, void *buffer) {
 
 static int64_t file_read_locked(struct file *file, size_t size, void *buffer) {
     if (!file || !buffer) return -EBADF;
-    if (file->kind == FILE_KIND_PIPE_READ) return pipe_read(file->pipe, size, buffer);
+    if (file_pipe_reads(file)) return pipe_read(file->pipe, size, buffer);
     if (file->kind == FILE_KIND_SOCKET) return unix_socket_read(file->socket, size, buffer);
     if (file->kind == FILE_KIND_INET_SOCKET)
         return inet_socket_read(file->inet_socket, size, buffer);
@@ -423,7 +431,7 @@ static int64_t file_write_locked(struct file *file, size_t size, const void *buf
         return netlink_socket_write(file->netlink_socket, size, buffer);
     if (file->kind == FILE_KIND_PTY_MASTER || file->kind == FILE_KIND_PTY_SLAVE)
         return pty_write(file->pty, file->kind == FILE_KIND_PTY_MASTER, size, buffer);
-    if (file->kind == FILE_KIND_PIPE_WRITE) {
+    if (file_pipe_writes(file)) {
         if (file->pipe && file->pipe->readers == 0) return -EPIPE;
         return pipe_write(file->pipe, size, buffer);
     }
@@ -461,12 +469,17 @@ uint32_t file_poll_events_nested(struct file *file, uint32_t requested, unsigned
     const uint32_t pollrdhup = 0x2000U;
     if (!file) return pollerr;
     uint32_t events = 0;
-    if (file->kind == FILE_KIND_PIPE_READ) {
-        if (file->pipe && file->pipe->count > 0) events |= pollin;
-        if (file->pipe && file->pipe->writers == 0) events |= pollhup;
-    } else if (file->kind == FILE_KIND_PIPE_WRITE) {
-        if (!file->pipe || file->pipe->readers == 0) events |= pollerr;
-        else if (file->pipe->count < file->pipe->capacity) events |= pollout;
+    if (file_is_pipe(file)) {
+        struct pipe_buffer *pipe = file->pipe;
+        if (file_pipe_reads(file)) {
+            if (pipe && pipe->count > 0) events |= pollin;
+            if (pipe && pipe->writers == 0 && pipe->writer_opens != file->pipe_writers_seen)
+                events |= pollhup;
+        }
+        if (file_pipe_writes(file)) {
+            if (!pipe || pipe->readers == 0) events |= pollerr;
+            else if (pipe->capacity - pipe->count >= PIPE_ATOMIC_WRITE) events |= pollout;
+        }
     } else if (file->kind == FILE_KIND_SOCKET) {
         if (unix_socket_read_ready(file->socket)) events |= pollin;
         if (unix_socket_write_ready(file->socket)) events |= pollout;
