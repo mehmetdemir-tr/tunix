@@ -16,6 +16,8 @@
 #include <tunix/kentry.h>
 #include <tunix/module.h>
 #include <tunix/procfs.h>
+#include <tunix/pty.h>
+#include <tunix/vt.h>
 #include <tunix/random.h>
 #include <tunix/uts.h>
 #include <tunix/smp.h>
@@ -843,8 +845,16 @@ static int64_t proc_pid_stat_read(struct vfs_node *node, uint64_t offset, size_t
     text_char(&text, ' ');
     text_unsigned(&text, process->sid);
     text_char(&text, ' ');
-    text_string(&text, "0 ");
-    text_signed(&text, -1);
+    uint32_t terminal = 0;
+    int foreground = -1;
+    if (!pty_terminal_of(process, &terminal, &foreground) &&
+        !vt_terminal_of_session(process->sid, &terminal, &foreground)) {
+        terminal = 0;
+        foreground = -1;
+    }
+    text_unsigned(&text, terminal);
+    text_char(&text, ' ');
+    text_signed(&text, foreground > 0 ? foreground : -1);
     text_char(&text, ' ');
     text_string(&text, "0 ");
     text_string(&text, "0 0 0 0 ");

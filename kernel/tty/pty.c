@@ -12,6 +12,7 @@
 #include <tunix/usercopy.h>
 #include <tunix/vfs.h>
 
+#define EPERM  1
 #define EINTR  4
 #define EAGAIN 11
 #define EFAULT 14
@@ -30,6 +31,9 @@
 #define FIONREAD   0x541BUL
 
 #define TIOCPKT_DATA 0x00
+#define O_NOCTTY     0400U
+#define O_ACCMODE    3U
+#define O_WRONLY     1U
 
 #define PTY_QUEUE_CAPACITY 8192U
 #define PTY_CANON_CAPACITY 1024U
@@ -60,8 +64,11 @@ struct pty_pair {
     int slave_files;
     int slave_ever_opened;
     int foreground_pgid;
+    uint64_t session;
     int eof_pending;
     struct tunix_termios termios;
+    uint32_t ispeed;
+    uint32_t ospeed;
     struct pty_winsize winsize;
     struct pty_queue to_master;
     struct pty_queue to_slave;
@@ -119,11 +126,14 @@ static void reset_pair(struct pty_pair *pty) {
     pty->slave_files = 0;
     pty->slave_ever_opened = 0;
     pty->foreground_pgid = 0;
+    pty->session = 0;
     pty->eof_pending = 0;
     pty->canonical_length = 0;
     queue_reset(&pty->to_master);
     queue_reset(&pty->to_slave);
     initialize_termios(&pty->termios);
+    pty->ispeed = 38400U;
+    pty->ospeed = 38400U;
     pty->winsize.rows = 25;
     pty->winsize.cols = 80;
     pty->winsize.xpixel = 0;
@@ -155,6 +165,46 @@ static void flush_canonical(struct pty_pair *pty) {
 static void signal_foreground(struct pty_pair *pty, int signal_number) {
     if (pty->foreground_pgid > 0)
         (void)process_send_signal(-(int64_t)pty->foreground_pgid, signal_number);
+}
+
+struct terminal_release {
+    struct pty_pair *pty;
+    uint64_t session;
+};
+
+static int release_terminal(struct process *process, void *context) {
+    const struct terminal_release *release = (const struct terminal_release *)context;
+    if (process->controlling_pty == release->pty &&
+        (!release->session || process->sid == release->session))
+        process->controlling_pty = NULL;
+    return 0;
+}
+
+static void forget_terminal(struct pty_pair *pty, uint64_t session) {
+    struct terminal_release release = {pty, session};
+    process_for_each(release_terminal, &release);
+}
+
+static void disassociate_session(struct pty_pair *pty) {
+    if (!pty->session) return;
+    uint64_t session = pty->session;
+    if (pty->foreground_pgid > 0) {
+        signal_foreground(pty, SIGHUP);
+        signal_foreground(pty, SIGCONT);
+    }
+    pty->session = 0;
+    pty->foreground_pgid = 0;
+    forget_terminal(pty, session);
+}
+
+static void make_controlling(struct pty_pair *pty, struct process *process) {
+    pty->session = process->sid;
+    pty->foreground_pgid = (int)process->pgid;
+    process->controlling_pty = pty;
+}
+
+static int session_leader(const struct process *process) {
+    return process && process->sid == process->pid && process->tgid == process->pid;
 }
 
 static size_t master_feed_input(struct pty_pair *pty, const uint8_t *bytes, size_t size) {
@@ -224,6 +274,8 @@ void pty_init(void) {
     ptmx_node = vfs_alloc_node("ptmx", VFS_CHARDEVICE);
     if (ptmx_node) {
         ptmx_node->mode = 0666;
+        ptmx_node->dev_major = DEV_MAJOR_TTYAUX;
+        ptmx_node->dev_minor = DEV_MINOR_TTYAUX_PTMX;
         (void)vfs_attach(dev, ptmx_node);
     }
     tty_node = vfs_alloc_node("tty", VFS_CHARDEVICE);
@@ -264,6 +316,8 @@ static struct pty_pair *new_pair(void) {
     }
     pty->slave_node->mode = 0620;
     pty->slave_node->data = pty;
+    pty->slave_node->dev_major = DEV_MAJOR_PTS;
+    pty->slave_node->dev_minor = (uint32_t)pty->number;
     if (pts_directory) (void)vfs_attach(pts_directory, pty->slave_node);
     pairs[pair_capacity++] = pty;
     return pty;
@@ -305,6 +359,10 @@ struct file *pty_open_slave(struct vfs_node *node, uint32_t flags) {
     if (!file) return NULL;
     pty->slave_files++;
     pty->slave_ever_opened = 1;
+    struct process *process = process_current();
+    if (!(flags & O_NOCTTY) && session_leader(process) && !process->controlling_pty &&
+        !pty->session)
+        make_controlling(pty, process);
     return file;
 }
 
@@ -338,9 +396,27 @@ void pty_close_endpoint(struct pty_pair *pty, int master) {
         pty->slave_files--;
     }
     if (pty->master_files == 0 && pty->slave_files == 0) {
+        forget_terminal(pty, 0);
         pty->allocated = 0;
         reset_pair(pty);
     }
+}
+
+int pty_terminal_of(const struct process *process, uint32_t *device, int *foreground) {
+    TTY_LOCKED;
+    struct pty_pair *pty = process ? process->controlling_pty : NULL;
+    if (!pty || !pty->allocated) return 0;
+    *device = dev_encode(DEV_MAJOR_PTS, (uint32_t)pty->number);
+    *foreground = pty->foreground_pgid;
+    return 1;
+}
+
+void pty_process_exited(struct process *process) {
+    TTY_LOCKED;
+    if (!session_leader(process) || !process->controlling_pty) return;
+    struct pty_pair *pty = process->controlling_pty;
+    if (pty->session == process->sid) disassociate_session(pty);
+    process->controlling_pty = NULL;
 }
 
 int64_t pty_read(struct pty_pair *pty, int master, size_t size, void *buffer) {
@@ -434,25 +510,49 @@ int64_t pty_ioctl(struct pty_pair *pty, int master, unsigned long request, uint6
     }
     if (request == TIOCSCTTY) {
         struct process *process = process_current();
-        if (process) {
-            process->controlling_pty = pty;
-            pty->foreground_pgid = (int)process->pgid;
+        if (!process) return -ENOTTY;
+        if (process->controlling_pty == pty && pty->session == process->sid) return 0;
+        if (!session_leader(process) || process->controlling_pty) return -EPERM;
+        if (pty->session && pty->session != process->sid) {
+            if (user_argument != 1 || process->cred.euid != 0) return -EPERM;
+            forget_terminal(pty, pty->session);
         }
+        make_controlling(pty, process);
         return 0;
     }
     if (request == TIOCNOTTY) {
         struct process *process = process_current();
-        if (process && process->controlling_pty == pty) process->controlling_pty = NULL;
+        if (!process || process->controlling_pty != pty) return -ENOTTY;
+        if (session_leader(process) && pty->session == process->sid) disassociate_session(pty);
+        process->controlling_pty = NULL;
         return 0;
+    }
+    if (request == TIOCGSID) {
+        struct process *process = process_current();
+        if (!master && (!process || process->controlling_pty != pty)) return -ENOTTY;
+        if (!pty->session) return -ENOTTY;
+        int session = (int)pty->session;
+        return copy_to_user(user_argument, &session, sizeof(session)) == 0 ? 0 : -EFAULT;
     }
     if (request == TCGETS) {
         return copy_to_user(user_argument, &pty->termios, sizeof(pty->termios)) == 0 ? 0 : -EFAULT;
     }
-    if (request == TCSETS || request == TCSETSW || request == TCSETSF) {
-        struct tunix_termios value;
-        if (copy_from_user(&value, user_argument, sizeof(value)) != 0) return -EFAULT;
-        pty->termios = value;
-        if (request == TCSETSF) {
+    if (request == TCGETS2) {
+        struct tunix_termios2 value = {pty->termios, pty->ispeed, pty->ospeed};
+        return copy_to_user(user_argument, &value, sizeof(value)) == 0 ? 0 : -EFAULT;
+    }
+    if (request == TCSETS || request == TCSETSW || request == TCSETSF || request == TCSETS2 ||
+        request == TCSETSW2 || request == TCSETSF2) {
+        struct tunix_termios2 requested = {pty->termios, pty->ispeed, pty->ospeed};
+        int legacy = request == TCSETS || request == TCSETSW || request == TCSETSF;
+        size_t length = legacy ? sizeof(requested.termios) : sizeof(requested);
+        if (copy_from_user(&requested, user_argument, length) != 0) return -EFAULT;
+        struct tunix_termios2 stored;
+        tty_termios_speeds(&requested, &stored);
+        pty->termios = stored.termios;
+        pty->ispeed = stored.ispeed;
+        pty->ospeed = stored.ospeed;
+        if (request == TCSETSF || request == TCSETSF2) {
             pty->canonical_length = 0;
             pty->eof_pending = 0;
             queue_reset(&pty->to_slave);

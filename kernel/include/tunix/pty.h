@@ -19,5 +19,8 @@ int64_t pty_write(struct pty_pair *pty, int master, size_t size, const void *buf
 int pty_read_ready(struct pty_pair *pty, int master);
 int pty_write_ready(struct pty_pair *pty, int master);
 int64_t pty_ioctl(struct pty_pair *pty, int master, unsigned long request, uint64_t user_argument);
+struct process;
+void pty_process_exited(struct process *process);
+int pty_terminal_of(const struct process *process, uint32_t *device, int *foreground);
 
 #endif

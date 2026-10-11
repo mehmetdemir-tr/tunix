@@ -50,6 +50,7 @@ const void *vt_graphics_mode_owner(void);
 int vt_graphics_takeover_allowed(const void *holder, const void *claimer);
 
 void vt_process_exited(uint64_t pid, uint64_t sid);
+int vt_terminal_of_session(uint64_t sid, uint32_t *device, int *foreground);
 
 int64_t vt_node_read(struct vfs_node *node, uint64_t offset, size_t size, void *buffer);
 int64_t vt_node_write(struct vfs_node *node, uint64_t offset, size_t size, const void *buffer);

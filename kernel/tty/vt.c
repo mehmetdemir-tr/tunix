@@ -15,6 +15,7 @@
 #include <tunix/usercopy.h>
 #include <tunix/vfs.h>
 #include <tunix/vt.h>
+#include <tunix/devnum.h>
 #include <uapi/input_event.h>
 
 #define EPERM  1
@@ -196,6 +197,18 @@ void vt_process_exited(uint64_t pid, uint64_t sid) {
 
         if (pending_index && index == active_index) finish_switch(pending_index);
     }
+}
+
+int vt_terminal_of_session(uint64_t sid, uint32_t *device, int *foreground) {
+    TTY_LOCKED;
+    for (unsigned index = 1U; sid && index <= VT_COUNT; index++) {
+        struct vt *vt = &terminals[index];
+        if (!vt->allocated || tty_session(vt->tty) != sid) continue;
+        *device = dev_encode(DEV_MAJOR_TTY, index);
+        *foreground = tty_foreground_pgid(vt->tty);
+        return 1;
+    }
+    return 0;
 }
 
 int vt_console_in_front(void) {
@@ -380,6 +393,24 @@ int64_t vt_node_ioctl(struct vfs_node *node, unsigned long request, uint64_t use
         struct tunix_termios value;
         if (copy_from_user(&value, user_argument, sizeof(value)) != 0) return -EFAULT;
         return tty_ioctl(vt->tty, request, &value) == 0 ? 0 : -ENOTTY;
+    }
+    case TCGETS2: {
+        struct tunix_termios2 value;
+        if (tty_ioctl(vt->tty, request, &value) != 0) return -ENOTTY;
+        return copy_to_user(user_argument, &value, sizeof(value)) == 0 ? 0 : -EFAULT;
+    }
+    case TCSETS2:
+    case TCSETSW2:
+    case TCSETSF2: {
+        struct tunix_termios2 value;
+        if (copy_from_user(&value, user_argument, sizeof(value)) != 0) return -EFAULT;
+        return tty_ioctl(vt->tty, request, &value) == 0 ? 0 : -ENOTTY;
+    }
+    case TIOCGSID: {
+        struct process *process = process_current();
+        int session = (int)tty_session(vt->tty);
+        if (!session || !process || process->sid != (uint64_t)session) return -ENOTTY;
+        return copy_to_user(user_argument, &session, sizeof(session)) == 0 ? 0 : -EFAULT;
     }
     case TIOCGPGRP: {
         int pgid;

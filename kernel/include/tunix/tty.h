@@ -17,6 +17,11 @@
 #define TIOCGWINSZ 0x5413UL
 #define TIOCGETD   0x5424UL
 #define TIOCSETD   0x5423UL
+#define TIOCGSID   0x5429UL
+#define TCGETS2    0x802C542AUL
+#define TCSETS2    0x402C542BUL
+#define TCSETSW2   0x402C542CUL
+#define TCSETSF2   0x402C542DUL
 
 #define KDGKBTYPE      0x4B33UL
 #define KDSETMODE      0x4B3AUL
@@ -87,6 +92,16 @@ struct tunix_termios {
 };
 
 _Static_assert(sizeof(struct tunix_termios) == 36U, "termios ABI size mismatch");
+
+struct tunix_termios2 {
+    struct tunix_termios termios;
+    uint32_t ispeed;
+    uint32_t ospeed;
+};
+
+_Static_assert(sizeof(struct tunix_termios2) == 44U, "termios2 ABI size mismatch");
+
+void tty_termios_speeds(const struct tunix_termios2 *requested, struct tunix_termios2 *stored);
 
 struct tty;
 struct terminal_screen;

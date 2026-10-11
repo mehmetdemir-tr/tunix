@@ -24,6 +24,7 @@ static int next_pending_signal(struct process *process);
 #include <tunix/workqueue.h>
 #include <tunix/process_arch.h>
 #include <tunix/procfs.h>
+#include <tunix/pty.h>
 #include <tunix/smp.h>
 #include <tunix/syscall.h>
 #include <tunix/time.h>
@@ -2769,6 +2770,7 @@ void process_exit_from_syscall(struct syscall_frame *frame, int status) {
     cgroup_exit(exiting);
     if (!exiting->is_thread) {
         vt_process_exited(exiting->pid, exiting->sid == exiting->pid ? exiting->sid : 0);
+        pty_process_exited(exiting);
         posix_timers_release(exiting->tgid);
     }
 

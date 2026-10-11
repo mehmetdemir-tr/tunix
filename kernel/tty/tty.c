@@ -30,6 +30,8 @@ extern void serial_write_char(char c);
 struct tty {
     struct terminal_screen *screen;
     struct tunix_termios termios;
+    uint32_t ispeed;
+    uint32_t ospeed;
     int foreground_pgid;
 
     uint64_t session;
@@ -753,6 +755,8 @@ struct tty *tty_create(struct terminal_screen *screen) {
     tty->termios.cc[TTY_VSTART] = 17;
     tty->termios.cc[TTY_VSTOP] = 19;
     tty->termios.cc[TTY_VSUSP] = 26;
+    tty->ispeed = 38400U;
+    tty->ospeed = 38400U;
     if (!keymap_loaded) {
         keymap_load_default();
         tty_reset_keyboard_state();
@@ -768,17 +772,64 @@ void tty_destroy(struct tty *tty) {
 
 struct terminal_screen *tty_screen(const struct tty *tty) { return tty ? tty->screen : NULL; }
 
+#define TTY_CBAUD   0010017U
+#define TTY_CBAUDEX 0010000U
+#define TTY_BOTHER  0010000U
+#define TTY_IBSHIFT 16U
+
+static const uint32_t baud_rates[32] = {
+    0,      50,     75,      110,     134,     150,     200,     300,     600,     1200,    1800,
+    2400,   4800,   9600,    19200,   38400,   0,       57600,   115200,  230400,  460800,  500000,
+    576000, 921600, 1000000, 1152000, 1500000, 2000000, 2500000, 3000000, 3500000, 4000000,
+};
+
+static uint32_t speed_of_code(uint32_t code) {
+    return baud_rates[(code & 017U) + ((code & TTY_CBAUDEX) ? 16U : 0U)];
+}
+
+void tty_termios_speeds(const struct tunix_termios2 *requested, struct tunix_termios2 *stored) {
+    uint32_t cflag = requested->termios.cflag;
+    uint32_t output = cflag & TTY_CBAUD;
+    uint32_t input = (cflag >> TTY_IBSHIFT) & TTY_CBAUD;
+    uint32_t ospeed = output == TTY_BOTHER ? requested->ospeed : speed_of_code(output);
+    uint32_t ispeed = ospeed;
+    if (input == TTY_BOTHER) ispeed = requested->ispeed;
+    else if (input) ispeed = speed_of_code(input);
+    stored->termios = requested->termios;
+    stored->ispeed = ispeed;
+    stored->ospeed = ospeed;
+}
+
 int tty_ioctl(struct tty *tty, unsigned long request, void *argument) {
     TTY_LOCKED;
     if (!tty || !argument) return -1;
     switch (request) {
     case TCGETS:  memcpy(argument, &tty->termios, sizeof(tty->termios)); return 0;
+    case TCGETS2: {
+        struct tunix_termios2 *value = (struct tunix_termios2 *)argument;
+        value->termios = tty->termios;
+        value->ispeed = tty->ispeed;
+        value->ospeed = tty->ospeed;
+        return 0;
+    }
     case TCSETS:
     case TCSETSW:
     case TCSETSF:
-        memcpy(&tty->termios, argument, sizeof(tty->termios));
-        if (request == TCSETSF) tty_flush_input(tty);
+    case TCSETS2:
+    case TCSETSW2:
+    case TCSETSF2: {
+        struct tunix_termios2 requested = {.ispeed = tty->ispeed, .ospeed = tty->ospeed};
+        if (request == TCSETS || request == TCSETSW || request == TCSETSF)
+            memcpy(&requested.termios, argument, sizeof(requested.termios));
+        else memcpy(&requested, argument, sizeof(requested));
+        struct tunix_termios2 stored;
+        tty_termios_speeds(&requested, &stored);
+        tty->termios = stored.termios;
+        tty->ispeed = stored.ispeed;
+        tty->ospeed = stored.ospeed;
+        if (request == TCSETSF || request == TCSETSF2) tty_flush_input(tty);
         return 0;
+    }
     case TIOCGPGRP: *(int *)argument = tty->foreground_pgid; return 0;
     case TIOCSPGRP:
         tty->foreground_pgid = *(const int *)argument;
