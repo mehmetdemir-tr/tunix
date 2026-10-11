@@ -26,7 +26,8 @@ KERNEL_CFLAGS := -std=gnu11 -Wall -Wextra -Werror -ffreestanding \
 KERNEL_LDFLAGS := -nostdlib -no-pie -Wl,-T,arch/x86_64/linker.ld \
 	-Wl,--gc-sections -Wl,--build-id=none -Wl,-z,max-page-size=0x1000
 
-SOURCE_PRUNE := -path ./modules -prune -o -path ./subprojects -prune -o -path ./build -prune -o
+SOURCE_PRUNE := -path ./modules -prune -o -path ./subprojects -prune -o -path ./build -prune -o \
+	-path ./rust -prune -o
 find-sources = $(patsubst ./%,%,$(shell find . $1 $(SOURCE_PRUNE) \( -name '*.c' -o -name '*.S' \) -print))
 KERNEL_SOURCES := $(call find-sources,-path ./arch/aarch64 -prune -o)
 KERNEL_OBJECTS := $(KERNEL_SOURCES:%=$(BUILD)/kernel/%.o)
