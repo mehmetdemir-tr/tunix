@@ -6384,9 +6384,12 @@ static void syscall_run(struct syscall_frame *frame) {
             SYSCALL_RET(frame) = SYSCALL_OPEN_FLAGS_OUT(fd_file(fd)->flags);
         } else if (command == F_SETFL) {
             struct file *file = fd_file(fd);
-            uint32_t wanted = (uint32_t)SYSCALL_ARG2(frame) & (uint32_t)O_NONBLOCK;
-            if (wanted) __atomic_fetch_or(&file->flags, (uint32_t)O_NONBLOCK, __ATOMIC_RELAXED);
-            else __atomic_fetch_and(&file->flags, ~(uint32_t)O_NONBLOCK, __ATOMIC_RELAXED);
+            uint32_t changeable =
+                (uint32_t)(O_APPEND | O_NONBLOCK | O_ASYNC | O_DIRECT | O_NOATIME);
+            uint32_t wanted = (uint32_t)SYSCALL_OPEN_FLAGS_IN(SYSCALL_ARG2(frame)) & changeable;
+            uint32_t seen = __atomic_load_n(&file->flags, __ATOMIC_RELAXED);
+            while (!__atomic_compare_exchange_n(&file->flags, &seen, (seen & ~changeable) | wanted,
+                                                1, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
             SYSCALL_RET(frame) = 0;
         } else {
             SYSCALL_RET(frame) = (uint64_t)-(int64_t)EINVAL;

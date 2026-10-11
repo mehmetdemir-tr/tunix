@@ -190,3 +190,12 @@ int64_t memfd_write(struct memfd_object *object, uint64_t offset, size_t length,
     }
     return transfer(object, offset, length, NULL, in);
 }
+
+int64_t memfd_append(struct memfd_object *object, size_t length, const void *in, uint64_t *end) {
+    MEMFD_LOCKED;
+    if (!object) return 0;
+    uint64_t offset = object->size;
+    int64_t moved = memfd_write(object, offset, length, in);
+    if (end) *end = moved > 0 ? offset + (uint64_t)moved : offset;
+    return moved;
+}

@@ -35,6 +35,7 @@ extern int process_pidfd_exited(uint64_t pid, uint64_t start_ns);
 
 #define EWOULDBLOCK EAGAIN
 #define EPIPE       32
+#define O_APPEND    02000
 
 struct file *file_open_node(struct vfs_node *node, uint32_t flags) {
     if (!node) return NULL;
@@ -429,11 +430,20 @@ static int64_t file_write_locked(struct file *file, size_t size, const void *buf
     if (file->kind == FILE_KIND_FRAMEBUFFER) return framebuffer_file_write(file, size, buffer);
     if (file->kind == FILE_KIND_EVENTFD) return eventfd_write(file->eventfd, size, buffer);
     if (file->kind == FILE_KIND_MEMFD) {
+        if (file->flags & O_APPEND) return memfd_append(file->memfd, size, buffer, &file->offset);
         int64_t moved = memfd_write(file->memfd, file->offset, size, buffer);
         if (moved > 0) file->offset += (uint64_t)moved;
         return moved;
     }
     if (file->kind != FILE_KIND_VFS || !file->node) return -EBADF;
+    if ((file->flags & O_APPEND) && (file->node->flags & 0xFFU) == VFS_FILE) {
+        vfs_lock_acquire();
+        file->offset = file->node->length;
+        int64_t appended = vfs_write(file->node, file->offset, size, buffer);
+        if (appended > 0) file->offset += (uint64_t)appended;
+        vfs_lock_release();
+        return appended;
+    }
     int64_t result = vfs_write(file->node, file->offset, size, buffer);
     if (result > 0) file->offset += (uint64_t)result;
     return result;
