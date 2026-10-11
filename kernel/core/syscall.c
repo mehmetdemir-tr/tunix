@@ -25,6 +25,7 @@
 #include <tunix/pipe.h>
 #include <tunix/pty.h>
 #include <tunix/pmm.h>
+#include <tunix/posix_lock.h>
 #include <tunix/posix_timer.h>
 #include <tunix/power.h>
 #include <tunix/process.h>
@@ -417,6 +418,9 @@ _Static_assert(offsetof(struct syscall_frame, user_rsp) == 136,
 #define F_GETLK      5
 #define F_SETLK      6
 #define F_SETLKW     7
+#define F_OFD_GETLK  36
+#define F_OFD_SETLK  37
+#define F_OFD_SETLKW 38
 #define F_RDLCK      0
 #define F_WRLCK      1
 #define F_UNLCK      2
@@ -551,6 +555,7 @@ struct linux_clone_args {
 #define ENOTSOCK        88
 #define EINPROGRESS     115
 #define ECONNREFUSED    111
+#define EOVERFLOW       75
 #define ERESTARTSYS     512
 
 #define FUTEX_WAIT 0
@@ -1588,7 +1593,7 @@ static int64_t sys_dup_to(int oldfd, int newfd, int cloexec, int reject_same) {
         result = -ENOMEM;
     else file = NULL;
     if (file) file_unref(file);
-    if (replaced) file_unref(replaced);
+    if (replaced) file_table_drop(process->files, replaced);
     return result;
 }
 
@@ -2800,18 +2805,31 @@ static int64_t sys_flock(int fd, int operation) {
     return file_flock(fd_file(fd), operation);
 }
 
-static int64_t vfs_posix_lock(struct vfs_node *node, int type, uint64_t pid) {
-    if (type == F_UNLCK) {
-        if (node->posix_lock_pid == pid) {
-            node->posix_lock_pid = 0;
-            node->posix_lock_write = 0;
-        }
-        return 0;
+static int lock_range(struct file *file, const struct linux_flock *lock,
+                      struct posix_lock_request *request) {
+    int64_t base;
+    if (lock->whence == SEEK_SET) base = 0;
+    else if (lock->whence == SEEK_CUR) base = (int64_t)file->offset;
+    else if (lock->whence == SEEK_END) base = (int64_t)file->node->length;
+    else return -EINVAL;
+    int64_t start;
+    if (__builtin_add_overflow(base, lock->start, &start)) return -EOVERFLOW;
+    if (lock->length > 0) {
+        int64_t last;
+        if (__builtin_add_overflow(start, lock->length - 1, &last)) return -EOVERFLOW;
+        if (start < 0) return -EINVAL;
+        request->start = (uint64_t)start;
+        request->end = (uint64_t)last;
+    } else if (lock->length < 0) {
+        int64_t first;
+        if (__builtin_add_overflow(start, lock->length, &first) || first < 0) return -EINVAL;
+        request->start = (uint64_t)first;
+        request->end = (uint64_t)start - 1U;
+    } else {
+        if (start < 0) return -EINVAL;
+        request->start = (uint64_t)start;
+        request->end = POSIX_LOCK_END;
     }
-    if (type != F_RDLCK && type != F_WRLCK) return -EINVAL;
-    if (node->posix_lock_pid && node->posix_lock_pid != pid) return -EAGAIN;
-    node->posix_lock_pid = pid;
-    node->posix_lock_write = type == F_WRLCK;
     return 0;
 }
 
@@ -2823,18 +2841,40 @@ static int64_t sys_fcntl_lock(int fd, int command, uint64_t user_lock) {
 
     struct linux_flock lock;
     if (copy_from_user(&lock, user_lock, sizeof(lock)) != 0) return -EFAULT;
+    int ofd = command == F_OFD_GETLK || command == F_OFD_SETLK || command == F_OFD_SETLKW;
+    if (ofd && lock.pid != 0) return -EINVAL;
+    if (lock.type != F_RDLCK && lock.type != F_WRLCK && lock.type != F_UNLCK) return -EINVAL;
 
-    if (command == F_GETLK) {
-        if (file->node->posix_lock_pid && file->node->posix_lock_pid != process->tgid) {
-            lock.type = file->node->posix_lock_write ? F_WRLCK : F_RDLCK;
-            lock.pid = (int32_t)file->node->posix_lock_pid;
-        } else {
+    struct posix_lock_request request;
+    request.type = lock.type == F_RDLCK ? POSIX_LOCK_READ
+        : lock.type == F_WRLCK          ? POSIX_LOCK_WRITE
+                                        : POSIX_LOCK_UNLOCK;
+    request.owner = ofd ? file_lock_owner(file) : (uint64_t)(uintptr_t)process->files;
+    request.pid = ofd ? -1 : (int32_t)process->tgid;
+    int status = lock_range(file, &lock, &request);
+    if (status != 0) return status;
+
+    if (command == F_GETLK || command == F_OFD_GETLK) {
+        if (request.type == POSIX_LOCK_UNLOCK) return -EINVAL;
+        posix_lock_test(file->node, &request);
+        if (request.type == POSIX_LOCK_UNLOCK) {
             lock.type = F_UNLCK;
+        } else {
+            lock.type = request.type == POSIX_LOCK_READ ? F_RDLCK : F_WRLCK;
+            lock.whence = SEEK_SET;
+            lock.start = (int64_t)request.start;
+            lock.length =
+                request.end == POSIX_LOCK_END ? 0 : (int64_t)(request.end - request.start + 1U);
+            lock.pid = request.pid;
         }
         return copy_to_user(user_lock, &lock, sizeof(lock)) == 0 ? 0 : -EFAULT;
     }
 
-    return vfs_posix_lock(file->node, lock.type, process->tgid);
+    uint32_t access = file->flags & O_ACCMODE;
+    if (request.type == POSIX_LOCK_READ && access == O_WRONLY) return -EBADF;
+    if (request.type == POSIX_LOCK_WRITE && access == O_RDONLY) return -EBADF;
+    status = posix_lock_set(file->node, &request, command == F_SETLKW || command == F_OFD_SETLKW);
+    return status == -EINTR ? -ERESTARTSYS : status;
 }
 
 static int64_t sys_fsync(int fd) {
@@ -6550,7 +6590,8 @@ static void syscall_run(struct syscall_frame *frame) {
                                      (SYSCALL_ARG2(frame) & FD_CLOEXEC) ? PROCESS_FD_CLOEXEC : 0);
                 SYSCALL_RET(frame) = 0;
             }
-        } else if (command == F_GETLK || command == F_SETLK || command == F_SETLKW) {
+        } else if (command == F_GETLK || command == F_SETLK || command == F_SETLKW ||
+                   command == F_OFD_GETLK || command == F_OFD_SETLK || command == F_OFD_SETLKW) {
             SYSCALL_RET(frame) = (uint64_t)sys_fcntl_lock(fd, command, SYSCALL_ARG2(frame));
         } else if (command == F_SETPIPE_SZ || command == F_GETPIPE_SZ) {
             struct file *file = fd_file(fd);

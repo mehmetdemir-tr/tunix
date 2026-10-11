@@ -19,6 +19,7 @@ static int next_pending_signal(struct process *process);
 #include <tunix/kstring.h>
 #include <tunix/percpu.h>
 #include <tunix/pmm.h>
+#include <tunix/posix_lock.h>
 #include <tunix/posix_timer.h>
 #include <tunix/process.h>
 #include <tunix/workqueue.h>
@@ -998,6 +999,13 @@ int process_set_fd_flags(struct process *process, int fd, uint8_t flags) {
     return status;
 }
 
+void file_table_drop(struct file_table *table, struct file *file) {
+    if (!file) return;
+    if (file->kind == FILE_KIND_VFS && file->node)
+        posix_lock_release_owner(file->node, (uint64_t)(uintptr_t)table);
+    file_unref(file);
+}
+
 int process_close_fd(struct process *process, int fd) {
     if (!process || !process->files || fd < 0) return -1;
     struct file_table *table = process->files;
@@ -1009,7 +1017,7 @@ int process_close_fd(struct process *process, int fd) {
     }
     lock_release(&table->lock);
     if (!file) return -1;
-    file_unref(file);
+    file_table_drop(table, file);
     return 0;
 }
 
@@ -1062,7 +1070,7 @@ static void file_table_destroy(struct file_table *table) {
         if (!file) continue;
         table->fds[fd] = NULL;
         table->fd_flags[fd] = 0;
-        file_unref(file);
+        file_table_drop(table, file);
     }
     file_table_free(table);
 }
@@ -1111,7 +1119,7 @@ void file_table_close_on_exec(struct file_table *table) {
         }
         lock_release(&table->lock);
         if (!closing) return;
-        file_unref(closing);
+        file_table_drop(table, closing);
     }
 }
 

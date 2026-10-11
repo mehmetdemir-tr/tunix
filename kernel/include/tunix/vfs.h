@@ -51,6 +51,7 @@
 
 struct vfs_node;
 struct vfs_acl;
+struct posix_lock;
 struct file;
 struct pipe_buffer;
 
@@ -122,8 +123,7 @@ struct vfs_node {
     uint64_t map_dirty_end;
     struct file *flock_exclusive;
     uint32_t flock_shared;
-    uint64_t posix_lock_pid;
-    int posix_lock_write;
+    struct posix_lock *posix_locks;
     uint32_t io_generation;
     uint32_t notify_generation;
     uint32_t dirty_pages;

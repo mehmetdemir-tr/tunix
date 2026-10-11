@@ -360,6 +360,7 @@ int process_install_file_at(struct process *process, struct file *file, int fd, 
 uint8_t process_get_fd_flags(const struct process *process, int fd);
 int process_set_fd_flags(struct process *process, int fd, uint8_t flags);
 int process_close_fd(struct process *process, int fd);
+void file_table_drop(struct file_table *table, struct file *file);
 int process_reserve_fd(struct process *process, int fd);
 int process_set_rlimit(struct process *process, unsigned resource,
                        const struct process_rlimit *value);

@@ -73,6 +73,10 @@ struct file {
     uint32_t pipe_writers_seen;
 };
 
+static inline uint64_t file_lock_owner(const struct file *file) {
+    return (uint64_t)(uintptr_t)file | 1U;
+}
+
 static inline int file_is_pipe(const struct file *file) {
     return file->kind == FILE_KIND_PIPE_READ || file->kind == FILE_KIND_PIPE_WRITE ||
         file->kind == FILE_KIND_PIPE_DUPLEX;

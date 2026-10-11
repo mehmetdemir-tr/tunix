@@ -22,6 +22,7 @@ extern int process_pidfd_exited(uint64_t pid, uint64_t start_ns);
 #include <tunix/memfd.h>
 #include <tunix/signalfd.h>
 #include <tunix/pipe.h>
+#include <tunix/posix_lock.h>
 #include <tunix/pty.h>
 #include <tunix/vt.h>
 #include <tunix/vfs.h>
@@ -309,11 +310,8 @@ void file_unref(struct file *file) {
 
     file_flock_release(file);
 
-    if (file->kind == FILE_KIND_VFS && file->node &&
-        file->node->posix_lock_pid == process_current_pid()) {
-        file->node->posix_lock_pid = 0;
-        file->node->posix_lock_write = 0;
-    }
+    if (file->kind == FILE_KIND_VFS && file->node)
+        posix_lock_release_owner(file->node, file_lock_owner(file));
     if (file->kind == FILE_KIND_PIPE_DUPLEX && file->pipe) pipe_release(file->pipe, 0);
     if (file_is_pipe(file) && file->pipe) pipe_release(file->pipe, file_pipe_writes(file));
 
