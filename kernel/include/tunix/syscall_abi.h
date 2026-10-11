@@ -62,4 +62,6 @@ static inline unsigned long syscall_open_flags_swap(unsigned long flags, int out
 #error "no syscall ABI mapping for this architecture"
 #endif
 
+#define SYSCALL_PID(value) ((int64_t)(int32_t)(value))
+
 #endif

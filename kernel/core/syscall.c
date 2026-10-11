@@ -6269,21 +6269,21 @@ static void syscall_run(struct syscall_frame *frame) {
     case SYS_EXIT_GROUP: process_exit_group_from_syscall(frame, (int)SYSCALL_ARG0(frame)); break;
     case SYS_WAIT4:      {
         int64_t result =
-            process_waitpid_from_syscall(frame, (int64_t)SYSCALL_ARG0(frame), SYSCALL_ARG1(frame),
-                                         (int)SYSCALL_ARG2(frame), SYS_WAIT4);
+            process_waitpid_from_syscall(frame, SYSCALL_PID(SYSCALL_ARG0(frame)),
+                                         SYSCALL_ARG1(frame), (int)SYSCALL_ARG2(frame), SYS_WAIT4);
         if (result != PROCESS_RESTARTED && process_current() == caller)
             SYSCALL_RET(frame) = (uint64_t)result;
         break;
     }
     case SYS_WAITID: {
         int idtype = (int)SYSCALL_ARG0(frame);
-        int64_t id = (int64_t)SYSCALL_ARG1(frame);
+        int64_t id = SYSCALL_PID(SYSCALL_ARG1(frame));
         int options = (int)SYSCALL_ARG3(frame);
         int64_t pid_spec;
         int pidfd_nonblocking = 0;
         if (idtype == 0) pid_spec = -1;
         else if (idtype == 1 && id > 0) pid_spec = id;
-        else if (idtype == 2 && id > 0) pid_spec = -id;
+        else if (idtype == 2 && id >= 0) pid_spec = -id;
         else if (idtype == P_PIDFD) {
             struct file *pidfd = file_from_fd((int)id);
             if (!pidfd || pidfd->kind != FILE_KIND_PIDFD) {
@@ -6316,19 +6316,19 @@ static void syscall_run(struct syscall_frame *frame) {
         break;
     }
     case SYS_KILL:
-        SYSCALL_RET(frame) = (uint64_t)process_send_signal_checked((int64_t)SYSCALL_ARG0(frame),
+        SYSCALL_RET(frame) = (uint64_t)process_send_signal_checked(SYSCALL_PID(SYSCALL_ARG0(frame)),
                                                                    (int)SYSCALL_ARG1(frame));
         break;
 
     case SYS_TKILL:
-        SYSCALL_RET(frame) = (uint64_t)process_send_thread_signal(0, (int64_t)SYSCALL_ARG0(frame),
-                                                                  (int)SYSCALL_ARG1(frame));
+        SYSCALL_RET(frame) = (uint64_t)process_send_thread_signal(
+            0, SYSCALL_PID(SYSCALL_ARG0(frame)), (int)SYSCALL_ARG1(frame));
         break;
     case SYS_TGKILL:
-        SYSCALL_RET(frame) = (int64_t)SYSCALL_ARG0(frame) <= 0
+        SYSCALL_RET(frame) = SYSCALL_PID(SYSCALL_ARG0(frame)) <= 0
             ? (uint64_t)-(int64_t)EINVAL
-            : (uint64_t)process_send_thread_signal((int64_t)SYSCALL_ARG0(frame),
-                                                   (int64_t)SYSCALL_ARG1(frame),
+            : (uint64_t)process_send_thread_signal(SYSCALL_PID(SYSCALL_ARG0(frame)),
+                                                   SYSCALL_PID(SYSCALL_ARG1(frame)),
                                                    (int)SYSCALL_ARG2(frame));
         break;
     case SYS_UNAME: SYSCALL_RET(frame) = (uint64_t)sys_uname(SYSCALL_ARG0(frame)); break;
@@ -6704,31 +6704,33 @@ static void syscall_run(struct syscall_frame *frame) {
         break;
     case SYS_GETGROUPS:
         SYSCALL_RET(frame) =
-            (uint64_t)sys_getgroups((int64_t)SYSCALL_ARG0(frame), SYSCALL_ARG1(frame));
+            (uint64_t)sys_getgroups(SYSCALL_PID(SYSCALL_ARG0(frame)), SYSCALL_ARG1(frame));
         break;
     case SYS_SETGROUPS:
         SYSCALL_RET(frame) =
-            (uint64_t)sys_setgroups((int64_t)SYSCALL_ARG0(frame), SYSCALL_ARG1(frame));
+            (uint64_t)sys_setgroups(SYSCALL_PID(SYSCALL_ARG0(frame)), SYSCALL_ARG1(frame));
         break;
     case SYS_SETPGID:
-        SYSCALL_RET(frame) =
-            (uint64_t)process_setpgid((int64_t)SYSCALL_ARG0(frame), (int64_t)SYSCALL_ARG1(frame));
+        SYSCALL_RET(frame) = (uint64_t)process_setpgid(SYSCALL_PID(SYSCALL_ARG0(frame)),
+                                                       SYSCALL_PID(SYSCALL_ARG1(frame)));
         break;
     case SYS_GETPPID: SYSCALL_RET(frame) = process_current_ppid(); break;
     case SYS_GETPGRP: SYSCALL_RET(frame) = process_current() ? process_current()->pgid : 0; break;
     case SYS_SETSID:  SYSCALL_RET(frame) = (uint64_t)process_setsid(); break;
     case SYS_GETPGID: {
         process_table_lock();
-        struct process *target =
-            SYSCALL_ARG0(frame) ? process_find(SYSCALL_ARG0(frame)) : process_current();
+        struct process *target = SYSCALL_PID(SYSCALL_ARG0(frame))
+            ? process_find((uint32_t)SYSCALL_ARG0(frame))
+            : process_current();
         SYSCALL_RET(frame) = target ? target->pgid : (uint64_t)-(int64_t)ESRCH;
         process_table_unlock();
         break;
     }
     case SYS_GETSID: {
         process_table_lock();
-        struct process *target =
-            SYSCALL_ARG0(frame) ? process_find(SYSCALL_ARG0(frame)) : process_current();
+        struct process *target = SYSCALL_PID(SYSCALL_ARG0(frame))
+            ? process_find((uint32_t)SYSCALL_ARG0(frame))
+            : process_current();
         SYSCALL_RET(frame) = target ? target->sid : (uint64_t)-(int64_t)ESRCH;
         process_table_unlock();
         break;
@@ -7152,8 +7154,8 @@ static void syscall_run(struct syscall_frame *frame) {
                                             SYSCALL_ARG2(frame), (uint32_t)SYSCALL_ARG3(frame));
         break;
     case SYS_PIDFD_OPEN:
-        SYSCALL_RET(frame) =
-            (uint64_t)sys_pidfd_open((int64_t)SYSCALL_ARG0(frame), (uint32_t)SYSCALL_ARG1(frame));
+        SYSCALL_RET(frame) = (uint64_t)sys_pidfd_open(SYSCALL_PID(SYSCALL_ARG0(frame)),
+                                                      (uint32_t)SYSCALL_ARG1(frame));
         break;
     case SYS_PIDFD_SEND_SIGNAL:
         SYSCALL_RET(frame) =
