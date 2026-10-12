@@ -76,11 +76,16 @@ extern void kprintf(const char *fmt, ...);
 #define PORTSC_CONNECTED      (1U << 0)
 #define PORTSC_ENABLED        (1U << 1)
 #define PORTSC_RESET          (1U << 4)
+#define PORTSC_LINK_SHIFT     5U
+#define PORTSC_LINK_MASK      0xFU
 #define PORTSC_POWER          (1U << 9)
 #define PORTSC_SPEED_SHIFT    10U
 #define PORTSC_SPEED_MASK     0xFU
 #define PORTSC_CONNECT_CHANGE (1U << 17)
 #define PORTSC_RESET_CHANGE   (1U << 21)
+#define PORTSC_WARM_RESET     (1U << 31)
+#define LINK_INACTIVE         6U
+#define LINK_COMPLIANCE       10U
 #define PORTSC_CHANGES        0x00FE0000U
 #define PORTSC_NEUTRAL        0x4E00FFE9U
 
@@ -1279,7 +1284,10 @@ static int root_reset(struct xhci_host *host, uint32_t port, uint32_t *portsc) {
         *portsc = status;
         return 0;
     }
-    write32(address, (status & PORTSC_NEUTRAL) | PORTSC_RESET);
+    uint32_t link = (status >> PORTSC_LINK_SHIFT) & PORTSC_LINK_MASK;
+    uint32_t request =
+        link == LINK_INACTIVE || link == LINK_COMPLIANCE ? PORTSC_WARM_RESET : PORTSC_RESET;
+    write32(address, (status & PORTSC_NEUTRAL) | request);
     uint64_t started = now();
     uint64_t deadline = started + PORT_RESET_TIMEOUT_NS;
     for (;;) {
