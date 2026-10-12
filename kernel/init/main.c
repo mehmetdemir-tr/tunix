@@ -25,6 +25,7 @@
 #include <tunix/time.h>
 #include <tunix/timer.h>
 #include <tunix/tty.h>
+#include <tunix/usb_storage.h>
 #include <tunix/vt.h>
 #include <tunix/vfs.h>
 #include <tunix/terminal.h>
@@ -51,6 +52,14 @@ static void boot_log_stage(const char *name, uint64_t *started) {
 }
 #endif
 
+#define ROOT_WAIT_NS   (10ULL * 1000000000ULL)
+#define ROOT_RESCAN_NS (100ULL * 1000000ULL)
+
+static int find_root(const char *name) {
+    if (strncmp(name, "LABEL=", 6) == 0) return ext2fs_find_label(name + 6);
+    return block_device_index_by_name(name);
+}
+
 static int root_device_index(void) {
     const char *value = boot_command_line_value("root");
     if (!value) return 0;
@@ -63,11 +72,31 @@ static int root_device_index(void) {
     }
     name[length] = '\0';
 
-    int index;
-    if (strncmp(name, "LABEL=", 6) == 0) index = ext2fs_find_label(name + 6);
-    else index = block_device_index_by_name(name);
+    int index = find_root(name);
+    if (index >= 0) return index;
+    kprintf("TUNIX: waiting for root=%s\n", name);
+    uint64_t deadline = time_uptime_ns() + ROOT_WAIT_NS;
+    while (index < 0 && time_uptime_ns() < deadline) {
+        uint64_t next = time_uptime_ns() + ROOT_RESCAN_NS;
+        while (time_uptime_ns() < next) cpu_relax();
+        xhci_rescan();
+        usb_storage_attach();
+        index = find_root(name);
+    }
     if (index < 0) kprintf("TUNIX: root=%s names no device\n", name);
-    return index < 0 ? 0 : index;
+    return index;
+}
+
+static void print_block_devices(void) {
+    terminal_print("\nblock devices:");
+    int found = block_device_count();
+    for (int index = 0; index < found; index++) {
+        const struct block_device *device = block_device_at(index);
+        terminal_print(" ");
+        terminal_print(device->dev_name);
+    }
+    if (!found) terminal_print(" none");
+    terminal_print("\n");
 }
 
 void kmain(const struct boot_info *boot) {
@@ -117,19 +146,16 @@ void kmain(const struct boot_info *boot) {
 #endif
 
     block_probe();
-    block_select_root(root_device_index());
+    int root_index = root_device_index();
+    if (root_index < 0) {
+        print_block_devices();
+        panic("root device not found");
+    }
+    block_select_root(root_index);
 
     vfs_init();
     if (ext2fs_mount_root() != 0) {
-        terminal_print("\nblock devices:");
-        int found = block_device_count();
-        for (int index = 0; index < found; index++) {
-            const struct block_device *device = block_device_at(index);
-            terminal_print(" ");
-            terminal_print(device->dev_name);
-        }
-        if (!found) terminal_print(" none");
-        terminal_print("\n");
+        print_block_devices();
         panic("root filesystem mount failed");
     }
     const struct block_device *root = block_root();
