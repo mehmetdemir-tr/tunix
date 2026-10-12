@@ -80,7 +80,11 @@ root=/dev/sda2 init=/sbin/init
 - `root=` names the block device the filesystem is on, by the name the block
   layer gives it. Partitions are devices of their own here (see
   `kernel/fs/partition.c`), so `sda2` is a device and the filesystem starts at its
-  first sector. Without `root=` the kernel takes whatever registered first.
+  first sector. `root=LABEL=name` picks the ext2/ext3 volume with that label
+  instead. When the named device is missing, the kernel rescans USB for ten
+  seconds, so a slow stick can still arrive, and then stops with
+  `root device not found` rather than mounting another disk. Without `root=` the
+  kernel takes whatever registered first.
 - `init=` names the first program. It defaults to `/sbin/init`; pointing it at
   something else is how a machine that will not finish booting gets debugged.
 
