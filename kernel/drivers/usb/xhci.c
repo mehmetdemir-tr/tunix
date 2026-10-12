@@ -82,7 +82,7 @@ extern void kprintf(const char *fmt, ...);
 #define PORTSC_CONNECT_CHANGE (1U << 17)
 #define PORTSC_RESET_CHANGE   (1U << 21)
 #define PORTSC_CHANGES        0x00FE0000U
-#define PORTSC_NEUTRAL        0x4E00FDE9U
+#define PORTSC_NEUTRAL        0x4E00FFE9U
 
 #define TRB_BYTES                   16U
 #define TRB_TYPE_SHIFT              10U
