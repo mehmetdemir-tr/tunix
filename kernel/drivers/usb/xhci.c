@@ -1472,6 +1472,17 @@ static void service_hosts(void *unused) {
 
 static struct work service_work = WORK_INITIALIZER(service_hosts, NULL);
 
+void xhci_rescan(void) {
+    mutex_lock(&xhci_ops);
+    lock_acquire(&xhci_lock);
+    for (unsigned index = 0; index < host_count; index++) {
+        pump(hosts[index]);
+        service(hosts[index]);
+    }
+    lock_release(&xhci_lock);
+    mutex_unlock(&xhci_ops);
+}
+
 void xhci_poll(void) {
     if (!lock_try_acquire(&xhci_lock)) return;
     int work = 0;

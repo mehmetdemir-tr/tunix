@@ -372,6 +372,10 @@ static void attach_pending(void *unused) {
 
 static struct work attach_work = WORK_INITIALIZER(attach_pending, NULL);
 
+void usb_storage_attach(void) {
+    if (__atomic_load_n(&initialized, __ATOMIC_ACQUIRE)) attach_pending(NULL);
+}
+
 void usb_storage_poll(void) {
     if (!__atomic_load_n(&initialized, __ATOMIC_ACQUIRE)) return;
     if (__atomic_load_n(&attached_slots, __ATOMIC_ACQUIRE) >= usb_storage_count()) return;

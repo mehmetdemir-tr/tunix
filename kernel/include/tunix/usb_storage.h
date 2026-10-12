@@ -3,5 +3,6 @@
 
 void usb_storage_init(void);
 void usb_storage_poll(void);
+void usb_storage_attach(void);
 
 #endif
