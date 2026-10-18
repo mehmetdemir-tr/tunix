@@ -33,8 +33,7 @@ struct tunix_sockaddr_un {
 
 struct unix_socket *unix_socket_create(int kind);
 int64_t unix_socket_sendto(struct unix_socket *socket, size_t size, const void *buffer,
-                           const struct tunix_sockaddr_un *address, size_t length,
-                           const char *resolved);
+                           const struct tunix_sockaddr_un *address, size_t length, const char *key);
 int unix_socket_is_dgram(struct unix_socket *socket);
 void unix_socket_last_source(struct unix_socket *socket, char path[108]);
 void unix_socket_set_credentials(struct unix_socket *socket, int32_t pid, uint32_t uid,
@@ -48,11 +47,12 @@ int unix_socket_get_passcred(struct unix_socket *socket);
 int unix_socket_pair(struct unix_socket **first, struct unix_socket **second, int seqpacket);
 void unix_socket_ref(struct unix_socket *socket);
 void unix_socket_unref(struct unix_socket *socket);
+int unix_socket_bound(struct unix_socket *socket);
 int unix_socket_bind(struct unix_socket *socket, const struct tunix_sockaddr_un *address,
-                     size_t length, const char *resolved);
+                     size_t length, const char *key);
 int unix_socket_listen(struct unix_socket *socket, int backlog);
 int unix_socket_connect(struct unix_socket *socket, const struct tunix_sockaddr_un *address,
-                        size_t length, const char *resolved);
+                        size_t length, const char *key);
 struct unix_socket *unix_socket_accept(struct unix_socket *socket);
 int64_t unix_socket_read(struct unix_socket *socket, size_t size, void *buffer);
 int64_t unix_socket_recv(struct unix_socket *socket, size_t size, void *buffer, int flags,

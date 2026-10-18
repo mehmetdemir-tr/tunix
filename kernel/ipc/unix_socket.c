@@ -510,26 +510,31 @@ static int copy_path(char destination[108], const struct tunix_sockaddr_un *addr
 }
 
 int unix_socket_bind(struct unix_socket *socket, const struct tunix_sockaddr_un *address,
-                     size_t length, const char *resolved) {
+                     size_t length, const char *key) {
     UNIX_LOCKED;
     if (!socket || socket->connected || socket->listening || socket->path[0]) return -EINVAL;
     char path[108];
     int status = copy_path(path, address, length);
     if (status < 0) return status;
-    const char *key = path[0] == '\x01' || !resolved ? path : resolved;
+    const char *bound_key = path[0] == '\x01' || !key ? path : key;
     for (struct unix_socket *bound = listener_list; bound; bound = bound->next_listener) {
-        if (bound->key && strcmp(bound->key, key) == 0) return -EADDRINUSE;
+        if (bound->key && strcmp(bound->key, bound_key) == 0) return -EADDRINUSE;
     }
-    size_t key_length = strlen(key);
+    size_t key_length = strlen(bound_key);
     socket->key = (char *)kmalloc(key_length + 1);
     if (!socket->key) return -EAGAIN;
-    memcpy(socket->key, key, key_length + 1);
+    memcpy(socket->key, bound_key, key_length + 1);
     strncpy(socket->path, path, sizeof(socket->path) - 1);
     if (socket->dgram) {
         socket->next_listener = listener_list;
         listener_list = socket;
     }
     return 0;
+}
+
+int unix_socket_bound(struct unix_socket *socket) {
+    UNIX_LOCKED;
+    return socket && (socket->connected || socket->listening || socket->path[0]);
 }
 
 int unix_socket_listen(struct unix_socket *socket, int backlog) {
@@ -582,14 +587,14 @@ static int dgram_deliver(struct unix_socket *from, struct unix_socket *target, s
 
 int64_t unix_socket_sendto(struct unix_socket *socket, size_t size, const void *buffer,
                            const struct tunix_sockaddr_un *address, size_t length,
-                           const char *resolved) {
+                           const char *key) {
     UNIX_LOCKED;
     if (!socket) return -EINVAL;
     if (!socket->dgram) return socket->connected ? -EISCONN : -EOPNOTSUPP;
     char path[108];
     int status = copy_path(path, address, length);
     if (status < 0) return status;
-    struct unix_socket *target = find_dgram(path[0] == '\x01' || !resolved ? path : resolved);
+    struct unix_socket *target = find_dgram(path[0] == '\x01' || !key ? path : key);
     if (!target) return -ECONNREFUSED;
     status = dgram_deliver(socket, target, size, buffer);
     return status < 0 ? status : (int64_t)size;
@@ -617,7 +622,7 @@ static struct unix_socket *find_listener(const char *key) {
 }
 
 int unix_socket_connect(struct unix_socket *socket, const struct tunix_sockaddr_un *address,
-                        size_t length, const char *resolved) {
+                        size_t length, const char *key) {
     UNIX_LOCKED;
     if (!socket) return -EINVAL;
     if (socket->connected && !socket->dgram) return -EALREADY;
@@ -625,7 +630,7 @@ int unix_socket_connect(struct unix_socket *socket, const struct tunix_sockaddr_
     int status = copy_path(path, address, length);
     if (status < 0) return status;
     if (socket->dgram) {
-        struct unix_socket *target = find_dgram(path[0] == '\x01' || !resolved ? path : resolved);
+        struct unix_socket *target = find_dgram(path[0] == '\x01' || !key ? path : key);
         if (!target) return -ECONNREFUSED;
         struct unix_socket *previous = socket->dgram_peer;
         target->peer_refs++;
@@ -633,7 +638,7 @@ int unix_socket_connect(struct unix_socket *socket, const struct tunix_sockaddr_
         dgram_peer_put(previous);
         return 0;
     }
-    struct unix_socket *listener = find_listener(path[0] == '\x01' || !resolved ? path : resolved);
+    struct unix_socket *listener = find_listener(path[0] == '\x01' || !key ? path : key);
     if (!listener) return -ECONNREFUSED;
     if (listener->pending_count > listener->backlog) return -EAGAIN;
 

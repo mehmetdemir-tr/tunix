@@ -103,6 +103,46 @@ TEST(sockets, binding_an_existing_path_is_eaddrinuse) {
     CHECK_ERRNO(bind(second, reinterpret_cast<sockaddr *>(&address), sizeof address), EADDRINUSE);
 }
 
+TEST(sockets, a_renamed_socket_still_accepts_clients) {
+    TempDir dir;
+    int server = socket(AF_UNIX, SOCK_STREAM, 0);
+    sockaddr_un address = address_of("staging.sock");
+    CHECK_OK(bind(server, reinterpret_cast<sockaddr *>(&address), sizeof address));
+    CHECK_OK(listen(server, 4));
+    CHECK_OK(rename("staging.sock", "final.sock"));
+    CHECK_OK(link("final.sock", "linked.sock"));
+    int client = socket(AF_UNIX, SOCK_STREAM, 0);
+    CHECK_ERRNO(connect(client, reinterpret_cast<sockaddr *>(&address), sizeof address), ENOENT);
+    address = address_of("final.sock");
+    CHECK_OK(connect(client, reinterpret_cast<sockaddr *>(&address), sizeof address));
+    int linked = socket(AF_UNIX, SOCK_STREAM, 0);
+    address = address_of("linked.sock");
+    CHECK_OK(connect(linked, reinterpret_cast<sockaddr *>(&address), sizeof address));
+    close(linked);
+    close(client);
+    close(server);
+}
+
+TEST(sockets, an_unlinked_path_can_be_bound_again) {
+    TempDir dir;
+    int first = socket(AF_UNIX, SOCK_STREAM, 0);
+    int second = socket(AF_UNIX, SOCK_STREAM, 0);
+    sockaddr_un address = address_of("again.sock");
+    CHECK_OK(bind(first, reinterpret_cast<sockaddr *>(&address), sizeof address));
+    CHECK_OK(listen(first, 1));
+    CHECK_OK(unlink("again.sock"));
+    CHECK_OK(bind(second, reinterpret_cast<sockaddr *>(&address), sizeof address));
+    CHECK_OK(listen(second, 1));
+    int client = socket(AF_UNIX, SOCK_STREAM, 0);
+    CHECK_OK(connect(client, reinterpret_cast<sockaddr *>(&address), sizeof address));
+    int accepted = accept(second, nullptr, nullptr);
+    CHECK(accepted >= 0);
+    close(accepted);
+    close(client);
+    close(second);
+    close(first);
+}
+
 TEST(sockets, getsockname_and_getpeername_return_the_path) {
     TempDir dir;
     int server = socket(AF_UNIX, SOCK_STREAM, 0);

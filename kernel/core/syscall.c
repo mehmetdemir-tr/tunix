@@ -1769,6 +1769,16 @@ static int copy_sockaddr_un(uint64_t user_address, uint64_t length,
     return copy_from_user(address, user_address, (size_t)length) == 0 ? 0 : -EFAULT;
 }
 
+#define SOCKET_KEY_BYTES 20
+
+static void socket_node_key(const struct vfs_node *node, char key[SOCKET_KEY_BYTES]) {
+    uint64_t inode = node->link_target ? node->link_target->inode : node->inode;
+    key[0] = '\x02';
+    for (int digit = 0; digit < 16; digit++)
+        key[1 + digit] = "0123456789abcdef"[(inode >> (60 - 4 * digit)) & 0xFU];
+    key[17] = '\0';
+}
+
 static int resolve_socket_path(const struct tunix_sockaddr_un *address, char **resolved) {
     char path[sizeof(address->path) + 1];
     memcpy(path, address->path, sizeof(address->path));
@@ -1787,21 +1797,22 @@ static int64_t sys_bind(int fd, uint64_t user_address, uint64_t length) {
         int status = copy_sockaddr_un(user_address, length, &address);
         if (status < 0) return status;
 
-        int named = address.path[0] != 0;
+        if (!address.path[0]) return unix_socket_bind(unix_value, &address, (size_t)length, NULL);
         VFS_PATH_SCOPED resolved = NULL;
-        if (named) {
-            status = resolve_socket_path(&address, &resolved);
-            if (status != 0) return status;
-            if (vfs_lookup_nofollow(resolved)) return -EADDRINUSE;
-            status = cred_may_write_parent(resolved);
-            if (status != 0) return status;
-        }
-        status = unix_socket_bind(unix_value, &address, (size_t)length, resolved);
-        if (status == 0 && named) {
-            struct process *self = process_current();
-            uint32_t mode = 0777U & ~(self ? self->umask : 0U);
-            (void)vfs_create_socket_node(resolved, mode);
-        }
+        status = resolve_socket_path(&address, &resolved);
+        if (status != 0) return status;
+        if (vfs_lookup_nofollow(resolved)) return -EADDRINUSE;
+        status = cred_may_write_parent(resolved);
+        if (status != 0) return status;
+        if (unix_socket_bound(unix_value)) return -EINVAL;
+        struct process *self = process_current();
+        uint32_t mode = 0777U & ~(self ? self->umask : 0U);
+        struct vfs_node *node = vfs_create_socket_node(resolved, mode);
+        if (!node) return -EADDRINUSE;
+        char key[SOCKET_KEY_BYTES];
+        socket_node_key(node, key);
+        status = unix_socket_bind(unix_value, &address, (size_t)length, key);
+        if (status != 0) (void)vfs_remove(resolved, 0);
         return status;
     }
     struct netlink_socket *netlink_value = netlink_socket_from_fd(fd);
@@ -1825,10 +1836,11 @@ static int64_t sys_listen(int fd, int backlog) {
     return inet_value ? inet_socket_listen(inet_value, backlog) : -EBADF;
 }
 
-static int socket_path_target(const char *resolved) {
+static int socket_path_target(const char *resolved, char key[SOCKET_KEY_BYTES]) {
     struct vfs_node *node = vfs_lookup(resolved);
     if (!node) return (int)lookup_errno(resolved, 1);
     if ((node->flags & 0xFFU) != VFS_SOCKET) return -ECONNREFUSED;
+    socket_node_key(node, key);
     return cred_may_path(resolved, node, CRED_WRITE);
 }
 
@@ -1839,13 +1851,15 @@ static int64_t sys_connect(int fd, uint64_t user_address, uint64_t length) {
         int status = copy_sockaddr_un(user_address, length, &address);
         if (status < 0) return status;
         VFS_PATH_SCOPED resolved = NULL;
+        char key[SOCKET_KEY_BYTES];
         if (address.path[0]) {
             status = resolve_socket_path(&address, &resolved);
             if (status != 0) return status;
-            status = socket_path_target(resolved);
+            status = socket_path_target(resolved, key);
             if (status != 0) return status;
         }
-        return unix_socket_connect(unix_value, &address, (size_t)length, resolved);
+        return unix_socket_connect(unix_value, &address, (size_t)length,
+                                   address.path[0] ? key : NULL);
     }
     struct inet_socket *inet_value = inet_socket_from_fd(fd);
     if (!inet_value || !user_address || length < 2 || length > 32) return -EBADF;
@@ -1949,13 +1963,15 @@ static int64_t unix_send_to_path(struct unix_socket *socket, const void *data, s
     int status = copy_sockaddr_un(user_address, address_length, &address);
     if (status < 0) return status;
     VFS_PATH_SCOPED resolved = NULL;
+    char key[SOCKET_KEY_BYTES];
     if (address.path[0]) {
         status = resolve_socket_path(&address, &resolved);
         if (status != 0) return status;
-        status = socket_path_target(resolved);
+        status = socket_path_target(resolved, key);
         if (status != 0) return status;
     }
-    return unix_socket_sendto(socket, length, data, &address, (size_t)address_length, resolved);
+    return unix_socket_sendto(socket, length, data, &address, (size_t)address_length,
+                              address.path[0] ? key : NULL);
 }
 
 static uint32_t unix_source_address(struct unix_socket *socket, struct tunix_sockaddr_un *address) {
