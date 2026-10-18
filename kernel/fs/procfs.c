@@ -1269,9 +1269,19 @@ static int set_link_target(struct vfs_node *link, const char *target) {
     return 0;
 }
 
+static void follow_owner(struct vfs_node *node, const struct process *process) {
+    if (!node) return;
+    node->uid = process->cred.euid;
+    node->gid = process->cred.egid;
+}
+
 static void proc_process_refresh(struct vfs_node *directory) {
     PROCESS_REF process = process_get(node_pid(directory));
     if (!process) return;
+
+    follow_owner(directory, process);
+    follow_owner(direct_child(directory, "fd"), process);
+    follow_owner(direct_child(directory, "fdinfo"), process);
 
     (void)set_link_target(direct_child(directory, "exe"),
                           process->exe_path ? process->exe_path : "/");

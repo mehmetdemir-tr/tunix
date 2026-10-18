@@ -1,4 +1,5 @@
 #include <csignal>
+#include <cstdio>
 #include <cstdlib>
 #include <fcntl.h>
 #include <spawn.h>
@@ -166,6 +167,22 @@ TEST(process, file_descriptor_limit_is_enforced) {
     }
     CHECK(last < 16);
     CHECK_ERRNO(dup(0), EMFILE);
+}
+
+TEST(process, proc_self_follows_a_change_of_user) {
+    if (geteuid() != 0) return;
+    pid_t child = fork();
+    if (child == 0) {
+        if (setgid(65534) != 0 || setuid(65534) != 0) _exit(1);
+        int fd = open("/dev/null", O_RDONLY);
+        char path[64];
+        std::snprintf(path, sizeof path, "/proc/self/fdinfo/%d", fd);
+        int info = open(path, O_RDONLY);
+        if (info < 0) _exit(2);
+        char text[256];
+        _exit(read(info, text, sizeof text) > 0 ? 0 : 3);
+    }
+    CHECK_EQ(exit_code(child), 0);
 }
 
 TEST(process, uname_describes_the_system) {
