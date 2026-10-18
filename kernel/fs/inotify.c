@@ -245,6 +245,11 @@ int inotify_read_ready(struct inotify_context *context) {
     return context && context->queued != 0;
 }
 
+size_t inotify_queued_bytes(struct inotify_context *context) {
+    INOTIFY_LOCKED;
+    return context ? context->queued : 0;
+}
+
 void inotify_notify(struct vfs_node *node, uint32_t mask, const char *name, uint32_t cookie) {
     INOTIFY_LOCKED;
     if (!node || !mask) return;

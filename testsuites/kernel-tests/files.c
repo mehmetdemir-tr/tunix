@@ -1,6 +1,17 @@
 #define TEST_NAME "files"
 #include "test.h"
 
+#if defined(__x86_64__)
+#define SYS_inotify_add_watch 254
+#define SYS_inotify_init1     294
+#else
+#define SYS_inotify_init1     26
+#define SYS_inotify_add_watch 27
+#endif
+#define IN_NONBLOCK O_NONBLOCK
+#define IN_CREATE   0x100
+#define FIONREAD    0x541B
+
 static u8 block[64 * 1024];
 static u8 check[64 * 1024];
 
@@ -104,6 +115,23 @@ static void memory_file(void) {
     close(fd);
 }
 
+static void inotify_pending_bytes(void) {
+    expect_eq(mkdir("/tmp/inotify", 0755), 0, "a directory to watch is made");
+    int fd = (int)SYSCALL(SYS_inotify_init1, IN_NONBLOCK, 0, 0, 0, 0, 0);
+    expect(fd >= 0, "inotify_init1 gives a descriptor");
+    expect(SYSCALL(SYS_inotify_add_watch, fd, (s64) "/tmp/inotify", IN_CREATE, 0, 0, 0) > 0,
+           "a directory can be watched");
+    int pending = -1;
+    expect_eq(SYSCALL(SYS_ioctl, fd, FIONREAD, (s64)&pending, 0, 0, 0), 0,
+              "FIONREAD works on an inotify descriptor");
+    expect_eq(pending, 0, "and says nothing is queued yet");
+    expect_eq(mkdir("/tmp/inotify/watched", 0755), 0, "a directory is made inside it");
+    expect_eq(SYSCALL(SYS_ioctl, fd, FIONREAD, (s64)&pending, 0, 0, 0), 0, "FIONREAD again");
+    expect(pending > 16, "now counts the queued event");
+    expect_eq(read(fd, block, sizeof(block)), pending, "and read returns exactly that many bytes");
+    close(fd);
+}
+
 static void run(int argc, char **argv) {
     (void)argc;
     (void)argv;
@@ -112,4 +140,5 @@ static void run(int argc, char **argv) {
     large_file();
     names();
     memory_file();
+    inotify_pending_bytes();
 }

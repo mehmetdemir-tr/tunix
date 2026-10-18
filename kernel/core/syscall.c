@@ -2914,6 +2914,7 @@ static int64_t sys_ioctl(int fd, unsigned long request, uint64_t user_argument) 
         case FILE_KIND_PIPE_READ:
         case FILE_KIND_PIPE_WRITE:
         case FILE_KIND_PIPE_DUPLEX: available = file->pipe ? (int32_t)file->pipe->count : 0; break;
+        case FILE_KIND_INOTIFY:     available = (int32_t)inotify_queued_bytes(file->inotify); break;
         case FILE_KIND_VFS:
             if (!file->node || (file->node->flags & 0xFFU) != VFS_FILE) return -ENOTTY;
             available = file->node->length > file->offset
