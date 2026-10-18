@@ -1,4 +1,5 @@
 #include <cstring>
+#include <pthread.h>
 #include <fcntl.h>
 #include <string>
 #include <sys/socket.h>
@@ -159,6 +160,29 @@ TEST(sockets, getsockname_and_getpeername_return_the_path) {
     seen = {};
     CHECK_OK(getpeername(client, reinterpret_cast<sockaddr *>(&seen), &length));
     CHECK_EQ(std::string(seen.sun_path), std::string("named.sock"));
+}
+
+namespace {
+
+int pair_made_in_a_thread[2];
+
+void *make_pair(void *) {
+    socketpair(AF_UNIX, SOCK_STREAM, 0, pair_made_in_a_thread);
+    return nullptr;
+}
+
+}
+
+TEST(sockets, peer_credentials_name_the_process_not_the_thread) {
+    pthread_t thread;
+    CHECK_EQ(pthread_create(&thread, nullptr, make_pair, nullptr), 0);
+    CHECK_EQ(pthread_join(thread, nullptr), 0);
+    ucred peer = {};
+    socklen_t length = sizeof peer;
+    CHECK_OK(getsockopt(pair_made_in_a_thread[0], SOL_SOCKET, SO_PEERCRED, &peer, &length));
+    CHECK_EQ(peer.pid, getpid());
+    close(pair_made_in_a_thread[0]);
+    close(pair_made_in_a_thread[1]);
 }
 
 TEST(sockets, scm_rights_passes_an_open_file) {

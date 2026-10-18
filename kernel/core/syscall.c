@@ -1672,7 +1672,7 @@ static int64_t sys_socket(int domain, int type, int protocol) {
                                                                    : UNIX_KIND_SEQPACKET);
         if (!socket) return -ENOMEM;
 
-        unix_socket_set_credentials(socket, process ? (int32_t)process->pid : 0,
+        unix_socket_set_credentials(socket, process ? (int32_t)process->tgid : 0,
                                     process ? process->cred.euid : 0,
                                     process ? process->cred.egid : 0);
         struct file *file = file_create_socket(socket);
@@ -1725,7 +1725,7 @@ static int64_t sys_socketpair(int domain, int type, int protocol, uint64_t user_
     int status = unix_socket_pair(&first, &second, base_type != TUNIX_SOCK_STREAM);
     if (status < 0) return status;
     struct process *process = process_current();
-    int32_t pid = process ? (int32_t)process->pid : 0;
+    int32_t pid = process ? (int32_t)process->tgid : 0;
     uint32_t uid = process ? process->cred.euid : 0;
     uint32_t gid = process ? process->cred.egid : 0;
     unix_socket_set_credentials(first, pid, uid, gid);
