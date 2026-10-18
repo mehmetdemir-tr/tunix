@@ -45,6 +45,7 @@ extern void kprintf(const char *fmt, ...);
 #define EMFILE     24
 #define EIO        5
 #define EBUSY      16
+#define EACCES     13
 #define ENODEV     19
 #define EOPNOTSUPP 95
 
@@ -563,6 +564,10 @@ static uint32_t flip_sequence;
 
 static const char drm_display_owner;
 static uint32_t open_count;
+
+#define DROPPED_MASTERS 16
+static const struct file *master_file;
+static const struct file *dropped_masters[DROPPED_MASTERS];
 
 static struct drm_dumb_buffer **buffers;
 static uint32_t buffer_capacity;
@@ -2274,30 +2279,102 @@ int64_t drm_file_ioctl(struct file *file, unsigned long request, uint64_t user_a
     return answer;
 }
 
+static int dropped_master(const struct file *file) {
+    for (unsigned index = 0; index < DROPPED_MASTERS; index++)
+        if (dropped_masters[index] == file) return 1;
+    return 0;
+}
+
+static void note_dropped_master(const struct file *file) {
+    if (dropped_master(file)) return;
+    for (unsigned index = 0; index < DROPPED_MASTERS; index++) {
+        if (dropped_masters[index]) continue;
+        dropped_masters[index] = file;
+        return;
+    }
+}
+
+static void forget_master(const struct file *file) {
+    for (unsigned index = 0; index < DROPPED_MASTERS; index++)
+        if (dropped_masters[index] == file) dropped_masters[index] = NULL;
+    if (master_file == file) master_file = NULL;
+}
+
+static int64_t require_master(const struct file *file) {
+    if (master_file == file) return 0;
+    if (master_file || dropped_master(file)) return -EACCES;
+    master_file = file;
+    return 0;
+}
+
+static int64_t ioctl_set_master(const struct file *file) {
+    if (!cred_is_root()) return -EPERM;
+    if (master_file && master_file != file) return -EBUSY;
+    for (unsigned index = 0; index < DROPPED_MASTERS; index++)
+        if (dropped_masters[index] == file) dropped_masters[index] = NULL;
+    master_file = file;
+    if (framebuffer_claim_graphics(&drm_display_owner) == 0) {
+        framebuffer_resume_graphics();
+        vt_display_claimed();
+    }
+    return 0;
+}
+
+static int64_t ioctl_drop_master(const struct file *file) {
+    if (!cred_is_root()) return -EPERM;
+    if (master_file != file) return -EINVAL;
+    master_file = NULL;
+    note_dropped_master(file);
+    if (virtgpu_cursor_available()) (void)virtgpu_cursor_set(0, 0, 0, 0, 0, 0, 0);
+    active_fb_id = 0;
+    virtgpu_scanout_disable();
+    scanout_current = 0;
+    (void)framebuffer_release_graphics(&drm_display_owner, 0);
+    return 0;
+}
+
+static int64_t ioctl_get_magic(uint64_t user_argument) {
+    uint32_t magic = 1;
+    return copy_to_user(user_argument, &magic, sizeof(magic)) == 0 ? 0 : -EFAULT;
+}
+
+static int64_t ioctl_auth_magic(const struct file *file, uint64_t user_argument) {
+    uint32_t magic;
+    if (copy_from_user(&magic, user_argument, sizeof(magic)) != 0) return -EFAULT;
+    if (require_master(file) != 0) return -EACCES;
+    return magic ? 0 : -EINVAL;
+}
+
+static int modesetting_request(unsigned nr) {
+    switch (nr) {
+    case DRM_NR_MODE_SETCRTC:
+    case DRM_NR_MODE_CURSOR:
+    case DRM_NR_MODE_CURSOR2:
+    case DRM_NR_MODE_ATOMIC:
+    case DRM_NR_MODE_PAGE_FLIP:
+    case DRM_NR_MODE_DIRTYFB:
+    case DRM_NR_MODE_SETPROPERTY:
+    case DRM_NR_MODE_OBJ_SETPROPERTY: return 1;
+    default:                          return 0;
+    }
+}
+
 static int64_t drm_dispatch_ioctl(struct file *file, unsigned long request,
                                   uint64_t user_argument) {
     retired_reap();
+    if (modesetting_request(IOCTL_NR(request))) {
+        int64_t status = require_master(file);
+        if (status != 0) return status;
+    }
     switch (IOCTL_NR(request)) {
-    case DRM_NR_VERSION:        return ioctl_version(user_argument);
-    case DRM_NR_GET_CAP:        return ioctl_get_cap(user_argument);
-    case DRM_NR_SET_CLIENT_CAP: return ioctl_set_client_cap(user_argument);
-    case DRM_NR_SET_VERSION:    return 0;
-    case DRM_NR_DROP_MASTER:
-        if (virtgpu_cursor_available()) (void)virtgpu_cursor_set(0, 0, 0, 0, 0, 0, 0);
-        active_fb_id = 0;
-        virtgpu_scanout_disable();
-        scanout_current = 0;
-        (void)framebuffer_release_graphics(&drm_display_owner, 0);
-        return 0;
-    case DRM_NR_SET_MASTER:
-        if (!cred_is_root()) return -EPERM;
-        if (framebuffer_claim_graphics(&drm_display_owner) == 0) {
-            framebuffer_resume_graphics();
-            vt_display_claimed();
-        }
-        return 0;
-    case DRM_NR_GET_MAGIC:
-    case DRM_NR_AUTH_MAGIC:             return 0;
+    case DRM_NR_VERSION:                return ioctl_version(user_argument);
+    case DRM_NR_GET_CAP:                return ioctl_get_cap(user_argument);
+    case DRM_NR_SET_CLIENT_CAP:         return ioctl_set_client_cap(user_argument);
+    case DRM_NR_SET_VERSION:            return 0;
+    case DRM_NR_DROP_MASTER:            return ioctl_drop_master(file);
+    case DRM_NR_SET_MASTER:             return ioctl_set_master(file);
+    case DRM_NR_GET_MAGIC:              return ioctl_get_magic(user_argument);
+    case DRM_NR_AUTH_MAGIC:             return ioctl_auth_magic(file, user_argument);
     case DRM_NR_PRIME_HANDLE_TO_FD:     return ioctl_prime_handle_to_fd(file, user_argument);
     case DRM_NR_PRIME_FD_TO_HANDLE:     return ioctl_prime_fd_to_handle(file, user_argument);
     case DRM_NR_MODE_GETPLANERESOURCES: return ioctl_get_plane_resources(user_argument);
@@ -2417,6 +2494,7 @@ void drm_file_close(struct file *file) {
     DRM_LOCKED;
     if (!file) return;
     drm_enter();
+    forget_master(file);
     for (int index = 0; index < framebuffer_capacity; index++) {
         if (!framebuffers[index].id || framebuffers[index].owner != file) continue;
         if (active_fb_id == framebuffers[index].id) active_fb_id = 0;

@@ -3,7 +3,7 @@ set -eu
 
 . testsuites/boot.sh
 
-tests=${*:-process memory files pipes sockets time}
+tests=${*:-process memory files pipes sockets time drm}
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/tunix-tests.XXXXXX")
 trap 'rm -rf "$work"' EXIT INT TERM
