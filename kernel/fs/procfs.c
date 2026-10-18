@@ -1176,6 +1176,78 @@ static void proc_fd_refresh(struct vfs_node *directory) {
     busy = 0;
 }
 
+#define FDINFO_FD_BITS 24U
+
+static void text_octal(struct text_buffer *text, uint64_t value) {
+    char digits[24];
+    int count = 0;
+    do {
+        digits[count++] = (char)('0' + (value & 7U));
+        value >>= 3;
+    } while (value);
+    text_char(text, '0');
+    while (count) text_char(text, digits[--count]);
+}
+
+static int64_t proc_fdinfo_read(struct vfs_node *node, uint64_t offset, size_t size, void *output) {
+    uint64_t key = (uint64_t)(uintptr_t)node->data;
+    int fd = (int)(key & ((1U << FDINFO_FD_BITS) - 1U));
+    PROCESS_REF process = process_get(key >> FDINFO_FD_BITS);
+    struct file_table *table = process_files_get(process);
+    if (!table) return -1;
+    struct file *file = file_table_get(table, fd);
+    file_table_unref(table);
+    if (!file) return -1;
+    uint64_t flags = file->flags;
+    if (process_get_fd_flags(process, fd) & PROCESS_FD_CLOEXEC) flags |= 02000000U;
+    TEXT_BUFFER text = {0};
+    text_string(&text, "pos:\t");
+    text_unsigned(&text, file->offset);
+    text_string(&text, "\nflags:\t");
+    text_octal(&text, flags);
+    text_string(&text, "\nmnt_id:\t0\nino:\t");
+    text_unsigned(&text, file->kind == FILE_KIND_VFS && file->node ? file->node->inode : 0);
+    text_string(&text, "\n");
+    if (file->kind == FILE_KIND_PIDFD) {
+        int64_t pid = process_pidfd_exited(file->pidfd_pid, file->pidfd_start_ns)
+            ? -1
+            : (int64_t)file->pidfd_pid;
+        text_string(&text, "Pid:\t");
+        text_signed(&text, pid);
+        text_string(&text, "\nNSpid:\t");
+        text_signed(&text, pid);
+        text_string(&text, "\n");
+    }
+    file_unref(file);
+    return text_read(&text, offset, size, output);
+}
+
+static void proc_fdinfo_refresh(struct vfs_node *directory) {
+    static int busy;
+    if (busy) return;
+    busy = 1;
+
+    while (directory->children) (void)vfs_detach_child(directory, directory->children);
+
+    uint64_t pid = node_pid(directory);
+    PROCESS_REF process = process_get(pid);
+    struct file_table *table = process_files_get(process);
+    if (table) {
+        for (int fd = 0; fd < table->capacity && fd < (1 << FDINFO_FD_BITS); fd++) {
+            struct file *file = file_table_get(table, fd);
+            if (!file) continue;
+            file_unref(file);
+            char name[16];
+            size_t at = path_append_decimal(name, 0, (uint64_t)fd);
+            name[at] = '\0';
+            (void)virtual_file(directory, name, proc_fdinfo_read,
+                               (pid << FDINFO_FD_BITS) | (uint64_t)fd);
+        }
+        file_table_unref(table);
+    }
+    busy = 0;
+}
+
 static struct vfs_node *direct_child(struct vfs_node *directory, const char *name) {
     for (struct vfs_node *child = directory->children; child; child = child->next)
         if (strcmp(child->name, name) == 0) return child;
@@ -1387,6 +1459,17 @@ void procfs_register_process(struct process *process) {
             descriptors->refresh = proc_fd_refresh;
         }
     }
+    if (!vfs_find_child(directory, "fdinfo")) {
+        decimal_path(process->pid, "/fdinfo", path);
+        struct vfs_node *information = vfs_mkdir_p(path);
+        if (information) {
+            information->mode = 0500;
+            information->uid = process->cred.euid;
+            information->gid = process->cred.egid;
+            information->data = (void *)(uintptr_t)process->pid;
+            information->refresh = proc_fdinfo_refresh;
+        }
+    }
     directory->refresh = proc_process_refresh;
 
     task_path(process->pid, NULL, path);
@@ -1459,6 +1542,13 @@ void procfs_unregister_process(uint64_t pid) {
     (void)vfs_remove(path, 0);
     decimal_path(pid, "/root", path);
     (void)vfs_remove(path, 0);
+    decimal_path(pid, "/fdinfo", path);
+    struct vfs_node *information = vfs_lookup(path);
+    if (information) {
+        information->refresh = NULL;
+        while (information->children) (void)vfs_detach_child(information, information->children);
+        (void)vfs_remove(path, 1);
+    }
     decimal_path(pid, "/fd", path);
     struct vfs_node *descriptors = vfs_lookup(path);
     if (descriptors) {
