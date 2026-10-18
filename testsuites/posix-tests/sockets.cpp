@@ -1,4 +1,5 @@
 #include <cstring>
+#include <fstream>
 #include <pthread.h>
 #include <fcntl.h>
 #include <string>
@@ -171,6 +172,14 @@ void *make_pair(void *) {
     return nullptr;
 }
 
+std::string fdinfo_field(int fd, const std::string &name) {
+    std::ifstream file("/proc/self/fdinfo/" + std::to_string(fd));
+    std::string line;
+    while (std::getline(file, line))
+        if (line.rfind(name + ":\t", 0) == 0) return line.substr(name.size() + 2);
+    return "";
+}
+
 }
 
 TEST(sockets, peer_credentials_name_the_process_not_the_thread) {
@@ -183,6 +192,20 @@ TEST(sockets, peer_credentials_name_the_process_not_the_thread) {
     CHECK_EQ(peer.pid, getpid());
     close(pair_made_in_a_thread[0]);
     close(pair_made_in_a_thread[1]);
+}
+
+TEST(sockets, peer_pidfd_names_the_peer_in_fdinfo) {
+    int pair[2];
+    CHECK_OK(socketpair(AF_UNIX, SOCK_STREAM, 0, pair));
+    int pidfd = -1;
+    socklen_t length = sizeof pidfd;
+    CHECK_OK(getsockopt(pair[0], SOL_SOCKET, SO_PEERPIDFD, &pidfd, &length));
+    CHECK(pidfd >= 0);
+    CHECK_EQ(fdinfo_field(pidfd, "Pid"), std::to_string(getpid()));
+    CHECK_EQ(fdinfo_field(pair[0], "pos"), std::string("0"));
+    close(pidfd);
+    close(pair[0]);
+    close(pair[1]);
 }
 
 TEST(sockets, scm_rights_passes_an_open_file) {

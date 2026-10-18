@@ -377,6 +377,7 @@ _Static_assert(offsetof(struct syscall_frame, user_rsp) == 136,
 #define SO_ERROR             4
 #define SO_PASSCRED          16
 #define SO_PEERCRED          17
+#define SO_PEERPIDFD         77
 #define SO_ACCEPTCONN        30
 #define IN_NONBLOCK          O_NONBLOCK
 #define IN_CLOEXEC           O_CLOEXEC
@@ -2678,6 +2679,25 @@ static int64_t sys_getsockopt(int fd, int level, int option, uint64_t user_value
             if (copy_to_user(user_value, &value, sizeof(value)) != 0) return -EFAULT;
             uint32_t length = sizeof(value);
             return copy_to_user(user_length, &length, sizeof(length)) == 0 ? 0 : -EFAULT;
+        }
+        if (option == SO_PEERPIDFD) {
+            if (supplied < sizeof(int32_t)) return -EINVAL;
+            struct unix_credentials peer;
+            int status = unix_socket_get_peer_credentials(unix_value, &peer);
+            if (status < 0) return status;
+            if (peer.pid <= 0) return -ENODATA;
+            uint64_t start_ns = 0;
+            if (process_pidfd_target((uint64_t)peer.pid, &start_ns) != 0) return -ESRCH;
+            int pidfd = install_new_file(file_create_pidfd((uint64_t)peer.pid, start_ns, 0), 1);
+            if (pidfd < 0) return pidfd;
+            int32_t value = pidfd;
+            uint32_t length = sizeof(value);
+            if (copy_to_user(user_value, &value, sizeof(value)) != 0 ||
+                copy_to_user(user_length, &length, sizeof(length)) != 0) {
+                (void)sys_close(pidfd);
+                return -EFAULT;
+            }
+            return 0;
         }
         if (option == SO_PASSCRED) {
             if (supplied < sizeof(int32_t)) return -EINVAL;
