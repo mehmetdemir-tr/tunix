@@ -5213,11 +5213,32 @@ static int64_t sys_prlimit(uint64_t pid, uint64_t resource, uint64_t user_new_li
     return 0;
 }
 
+static int install_new_file(struct file *file, int cloexec);
+
+static int64_t give_pidfd(int64_t pid, uint64_t pidfd_user) {
+    if (pid <= 0 || !pidfd_user) return pid;
+    uint64_t start_ns = 0;
+    if (process_pidfd_target((uint64_t)pid, &start_ns) != 0) start_ns = 0;
+    int fd = install_new_file(file_create_pidfd((uint64_t)pid, start_ns, 0), 1);
+    if (fd < 0) return fd;
+    int32_t value = fd;
+    if (copy_to_user(pidfd_user, &value, sizeof(value)) != 0) {
+        (void)sys_close(fd);
+        return -EFAULT;
+    }
+    return pid;
+}
+
 static int64_t sys_clone_fork_compat(struct syscall_frame *frame, uint64_t flags,
                                      uint64_t child_stack, uint64_t parent_tid_user,
-                                     uint64_t child_tid_user, uint64_t tls, int clear_handlers) {
+                                     uint64_t child_tid_user, uint64_t tls, int clear_handlers,
+                                     uint64_t pidfd_user) {
     struct process *parent = process_current();
     if (!parent) return -EINVAL;
+    if (pidfd_user) {
+        if (flags & (CLONE_THREAD | CLONE_DETACHED)) return -EINVAL;
+        if (!vmm_user_range_valid(parent->cr3, pidfd_user, sizeof(int32_t), 1)) return -EFAULT;
+    }
     if ((flags & CLONE_PARENT_SETTID) &&
         (!parent_tid_user ||
          !vmm_user_range_valid(parent->cr3, parent_tid_user, sizeof(uint32_t), 1)))
@@ -5245,7 +5266,7 @@ static int64_t sys_clone_fork_compat(struct syscall_frame *frame, uint64_t flags
         if (flags & ~(0xFFULL | vfork_allowed)) return -ENOSYS;
         if (exit_signal != 0 && exit_signal != SIGCHLD) return -EINVAL;
         struct fork_request request = {child_stack, 0, 0, clear_handlers};
-        return process_fork_from_syscall(frame, &request);
+        return give_pidfd(process_fork_from_syscall(frame, &request), pidfd_user);
     }
 
     uint64_t unsupported = flags & ~(0xFFULL | CLONE_FORK_METADATA_FLAGS);
@@ -5269,7 +5290,7 @@ static int64_t sys_clone_fork_compat(struct syscall_frame *frame, uint64_t flags
     if ((flags & CLONE_PARENT_SETTID) && parent_tid_user) {
         if (copy_to_user(parent_tid_user, &tid, sizeof(tid)) != 0) return -EFAULT;
     }
-    return pid;
+    return give_pidfd(pid, pidfd_user);
 }
 
 static int64_t sys_clone3_fork_compat(struct syscall_frame *frame, uint64_t user_args,
@@ -5285,13 +5306,14 @@ static int64_t sys_clone3_fork_compat(struct syscall_frame *frame, uint64_t user
     if ((!args.stack && args.stack_size) || (args.stack && !args.stack_size) ||
         args.stack >= USER_ADDRESS_LIMIT || args.stack_size > USER_ADDRESS_LIMIT - args.stack)
         return -EINVAL;
-    if ((args.flags & CLONE_PIDFD) || args.set_tid_size || (args.flags & CLONE_INTO_CGROUP))
-        return -ENOSYS;
+    if (args.set_tid_size || (args.flags & CLONE_INTO_CGROUP)) return -ENOSYS;
+    if ((args.flags & CLONE_PIDFD) && !args.pidfd) return -EFAULT;
 
     uint64_t child_stack = args.stack ? args.stack + args.stack_size : 0;
-    uint64_t flags = (args.flags & ~CLONE_CLEAR_SIGHAND) | args.exit_signal;
+    uint64_t flags = (args.flags & ~(CLONE_CLEAR_SIGHAND | CLONE_PIDFD)) | args.exit_signal;
     return sys_clone_fork_compat(frame, flags, child_stack, args.parent_tid, args.child_tid,
-                                 args.tls, (args.flags & CLONE_CLEAR_SIGHAND) != 0);
+                                 args.tls, (args.flags & CLONE_CLEAR_SIGHAND) != 0,
+                                 (args.flags & CLONE_PIDFD) ? args.pidfd : 0);
 }
 
 static struct file *file_from_fd(int fd) { return fd_file(fd); }
@@ -6466,9 +6488,14 @@ static void syscall_run(struct syscall_frame *frame) {
     case SYS_GETPID: SYSCALL_RET(frame) = process_current_pid(); break;
     case SYS_GETTID: SYSCALL_RET(frame) = process_current_tid(); break;
     case SYS_CLONE:  {
-        int64_t pid = sys_clone_fork_compat(frame, SYSCALL_ARG0(frame), SYSCALL_ARG1(frame),
-                                            SYSCALL_ARG2(frame), SYSCALL_CLONE_CHILD_TID(frame),
-                                            SYSCALL_CLONE_TLS(frame), 0);
+        uint64_t flags = SYSCALL_ARG0(frame);
+        int64_t pid;
+        if ((flags & CLONE_PIDFD) && (flags & CLONE_PARENT_SETTID)) pid = -EINVAL;
+        else
+            pid = sys_clone_fork_compat(frame, flags & ~CLONE_PIDFD, SYSCALL_ARG1(frame),
+                                        SYSCALL_ARG2(frame), SYSCALL_CLONE_CHILD_TID(frame),
+                                        SYSCALL_CLONE_TLS(frame), 0,
+                                        (flags & CLONE_PIDFD) ? SYSCALL_ARG2(frame) : 0);
         SYSCALL_RET(frame) = (uint64_t)pid;
         if (pid > 0) process_run_child_first_from_syscall(frame, (uint64_t)pid);
         break;
