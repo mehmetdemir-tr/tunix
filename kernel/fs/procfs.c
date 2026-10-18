@@ -1071,7 +1071,7 @@ static int64_t proc_environ_read(struct vfs_node *node, uint64_t offset, size_t 
 
 static struct vfs_node *virtual_file(struct vfs_node *parent, const char *name, vfs_read_fn reader,
                                      uint64_t pid) {
-    struct vfs_node *node = vfs_alloc_node(name, VFS_FILE);
+    struct vfs_node *node = vfs_alloc_node(name, VFS_FILE | VFS_UNSIZED);
     if (!node) return NULL;
     node->mode = 0444;
     node->length = PROC_BUFFER_SIZE;

@@ -47,6 +47,12 @@ std::set<std::string> list(const char *path) {
 
 }
 
+TEST(files, generated_proc_files_report_no_size) {
+    struct stat info = {};
+    CHECK_OK(stat("/proc/self/status", &info));
+    CHECK_EQ(info.st_size, 0L);
+}
+
 TEST(files, write_read_and_seek) {
     TempDir dir;
     CHECK(dir.ok());

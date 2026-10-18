@@ -3007,9 +3007,10 @@ static void fill_stat(struct vfs_node *node, struct linux_stat *stat) {
     stat->st_nlink = node->links ? node->links : 1;
     stat->st_uid = node->uid;
     stat->st_gid = node->gid;
-    stat->st_size = (int64_t)node->length;
+    uint64_t size = (node->flags & VFS_UNSIZED) ? 0 : node->length;
+    stat->st_size = (int64_t)size;
     stat->st_blksize = 4096;
-    stat->st_blocks = (int64_t)((node->length + 511) / 512);
+    stat->st_blocks = (int64_t)((size + 511) / 512);
     uint32_t kind = node->flags & 0xFFU;
     uint32_t type = kind == VFS_DIRECTORY
         ? 0040000U
