@@ -15,6 +15,9 @@ make test   # run the kernel tests
 make rust-test  # unit and differential tests of the Rust code
 ```
 
+The desktop is Weston by default. `make DESKTOP=gnome` builds a GNOME image
+instead, and `make DESKTOP=kde` a KDE Plasma one with the SDDM login screen.
+
 `make -C kernel` builds only the kernel and its modules, into `kernel/build/`.
 
 Log in as `root` with the password `tunix`.
