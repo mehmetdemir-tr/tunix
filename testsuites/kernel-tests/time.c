@@ -83,6 +83,26 @@ static void epoll(void) {
     close(epoll);
 }
 
+#define TFD_TIMER_ABSTIME       1
+#define TFD_TIMER_CANCEL_ON_SET 2
+#define EINVAL                  22
+
+static void wall_clock_timers(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_REALTIME, &now);
+    struct itimerspec minute = {{60, 0}, {now.sec + 60, 0}};
+    int wall = (int)timerfd_create(CLOCK_REALTIME);
+    expect_eq(SYSCALL(SYS_timerfd_settime, wall, TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET,
+                      (s64)&minute, 0, 0, 0),
+              0, "a wall-clock timerfd can ask to be cancelled when the clock is set");
+    int steady = (int)timerfd_create(CLOCK_MONOTONIC);
+    expect_eq(SYSCALL(SYS_timerfd_settime, steady, TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET,
+                      (s64)&minute, 0, 0, 0),
+              -EINVAL, "a monotonic one cannot");
+    close(steady);
+    close(wall);
+}
+
 static void run(int argc, char **argv) {
     (void)argc;
     (void)argv;
@@ -90,4 +110,5 @@ static void run(int argc, char **argv) {
     sleeping();
     eventfds();
     epoll();
+    wall_clock_timers();
 }

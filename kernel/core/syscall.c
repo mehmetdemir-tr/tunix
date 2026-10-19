@@ -343,49 +343,50 @@ _Static_assert(offsetof(struct syscall_frame, user_rsp) == 136,
 #define O_TMPFILE   020200000
 #define O_SYNC      04010000
 
-#define MSG_DONTWAIT         0x40
-#define MSG_WAITFORONE       0x10000
-#define SOCKET_MESSAGE_STAGE 4096
-#define SOCKET_MESSAGE_MAX   PIPE_CAPACITY
-#define UIO_MAXIOV           1024
-#define SO_SNDBUF            7
-#define SO_RCVBUF            8
-#define MSG_CTRUNC           0x08
-#define MSG_TRUNC            0x20
-#define IPPROTO_IP_LEVEL     0
-#define IP_TTL_OPTION        2
-#define MSG_CMSG_CLOEXEC     0x40000000
-#define SOCK_NONBLOCK        O_NONBLOCK
-#define SOCK_CLOEXEC         O_CLOEXEC
-#define FD_CLOEXEC           1
-#define EFD_SEMAPHORE        1
-#define EFD_NONBLOCK         O_NONBLOCK
-#define EFD_CLOEXEC          O_CLOEXEC
-#define TFD_NONBLOCK         O_NONBLOCK
-#define TFD_CLOEXEC          O_CLOEXEC
-#define SFD_NONBLOCK         O_NONBLOCK
-#define SFD_CLOEXEC          O_CLOEXEC
-#define TFD_TIMER_ABSTIME    1
-#define EPOLL_CLOEXEC        O_CLOEXEC
-#define EPOLL_CTL_ADD        1
-#define EPOLL_CTL_DEL        2
-#define EPOLL_CTL_MOD        3
-#define SOL_SOCKET           1
-#define SCM_RIGHTS           1
-#define SCM_CREDENTIALS      2
-#define SO_TYPE              3
-#define SO_ERROR             4
-#define SO_PASSCRED          16
-#define SO_PEERCRED          17
-#define SO_PEERPIDFD         77
-#define SO_ACCEPTCONN        30
-#define IN_NONBLOCK          O_NONBLOCK
-#define IN_CLOEXEC           O_CLOEXEC
-#define MFD_CLOEXEC          0x0001U
-#define MFD_ALLOW_SEALING    0x0002U
-#define MFD_NOEXEC_SEAL      0x0008U
-#define MFD_EXEC             0x0010U
-#define SIOCGIFCONF          0x8912U
+#define MSG_DONTWAIT            0x40
+#define MSG_WAITFORONE          0x10000
+#define SOCKET_MESSAGE_STAGE    4096
+#define SOCKET_MESSAGE_MAX      PIPE_CAPACITY
+#define UIO_MAXIOV              1024
+#define SO_SNDBUF               7
+#define SO_RCVBUF               8
+#define MSG_CTRUNC              0x08
+#define MSG_TRUNC               0x20
+#define IPPROTO_IP_LEVEL        0
+#define IP_TTL_OPTION           2
+#define MSG_CMSG_CLOEXEC        0x40000000
+#define SOCK_NONBLOCK           O_NONBLOCK
+#define SOCK_CLOEXEC            O_CLOEXEC
+#define FD_CLOEXEC              1
+#define EFD_SEMAPHORE           1
+#define EFD_NONBLOCK            O_NONBLOCK
+#define EFD_CLOEXEC             O_CLOEXEC
+#define TFD_NONBLOCK            O_NONBLOCK
+#define TFD_CLOEXEC             O_CLOEXEC
+#define SFD_NONBLOCK            O_NONBLOCK
+#define SFD_CLOEXEC             O_CLOEXEC
+#define TFD_TIMER_ABSTIME       1
+#define TFD_TIMER_CANCEL_ON_SET 2
+#define EPOLL_CLOEXEC           O_CLOEXEC
+#define EPOLL_CTL_ADD           1
+#define EPOLL_CTL_DEL           2
+#define EPOLL_CTL_MOD           3
+#define SOL_SOCKET              1
+#define SCM_RIGHTS              1
+#define SCM_CREDENTIALS         2
+#define SO_TYPE                 3
+#define SO_ERROR                4
+#define SO_PASSCRED             16
+#define SO_PEERCRED             17
+#define SO_PEERPIDFD            77
+#define SO_ACCEPTCONN           30
+#define IN_NONBLOCK             O_NONBLOCK
+#define IN_CLOEXEC              O_CLOEXEC
+#define MFD_CLOEXEC             0x0001U
+#define MFD_ALLOW_SEALING       0x0002U
+#define MFD_NOEXEC_SEAL         0x0008U
+#define MFD_EXEC                0x0010U
+#define SIOCGIFCONF             0x8912U
 
 #define SEEK_SET 0
 #define SEEK_CUR 1
@@ -5440,7 +5441,7 @@ static int64_t sys_timerfd_create(int clock_id, int flags) {
 }
 
 static int64_t sys_timerfd_settime(int fd, int flags, uint64_t user_new, uint64_t user_old) {
-    if (!user_new || (flags & ~TFD_TIMER_ABSTIME)) return -EINVAL;
+    if (!user_new || (flags & ~(TFD_TIMER_ABSTIME | TFD_TIMER_CANCEL_ON_SET))) return -EINVAL;
     struct file *file = file_from_fd(fd);
     if (!file || file->kind != FILE_KIND_TIMERFD) return -EBADF;
     struct tunix_itimerspec new_value;
