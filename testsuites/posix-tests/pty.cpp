@@ -62,6 +62,21 @@ TEST(pty, posix_openpt_gives_a_master_and_a_slave) {
     CHECK_EQ(isatty(pipes[0]), 0);
 }
 
+TEST(pty, fionread_counts_what_the_master_can_read) {
+    Pty pty;
+    CHECK(pty.ok());
+    struct termios mode = {};
+    CHECK_OK(tcgetattr(pty.slave, &mode));
+    cfmakeraw(&mode);
+    CHECK_OK(tcsetattr(pty.slave, TCSANOW, &mode));
+    CHECK_EQ(write(pty.slave, "hello", 5), 5L);
+    struct pollfd entry = {pty.master, POLLIN, 0};
+    CHECK_EQ(poll(&entry, 1, 2000), 1);
+    int available = -1;
+    CHECK_OK(ioctl(pty.master, FIONREAD, &available));
+    CHECK_EQ(available, 5);
+}
+
 TEST(pty, canonical_mode_delivers_whole_lines) {
     Pty pty;
     CHECK(pty.ok());
