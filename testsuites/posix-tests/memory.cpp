@@ -42,6 +42,17 @@ const long page = sysconf(_SC_PAGESIZE);
 
 }
 
+TEST(memory, mlock_accepts_mapped_pages_and_refuses_holes) {
+    const size_t size = 4 * 4096;
+    void *mapping = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    CHECK(mapping != MAP_FAILED);
+    CHECK_OK(mlock(mapping, size));
+    CHECK_OK(munlock(mapping, size));
+    CHECK_OK(munmap(static_cast<char *>(mapping) + 4096, 4096));
+    CHECK_ERRNO(mlock(mapping, size), ENOMEM);
+    CHECK_OK(munmap(mapping, size));
+}
+
 TEST(memory, anonymous_mappings_start_zeroed) {
     size_t length = 16 * (size_t)page;
     auto *bytes = static_cast<unsigned char *>(

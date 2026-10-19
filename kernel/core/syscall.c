@@ -91,6 +91,11 @@ _Static_assert(offsetof(struct syscall_frame, user_rsp) == 136,
 #define SYS_BRK                    12
 #define SYS_MSYNC                  26
 #define SYS_MADVISE                28
+#define SYS_MLOCK                  149
+#define SYS_MUNLOCK                150
+#define SYS_MLOCKALL               151
+#define SYS_MUNLOCKALL             152
+#define SYS_MLOCK2                 325
 #define SYS_SHMGET                 29
 #define SYS_SHMAT                  30
 #define SYS_SHMCTL                 31
@@ -4083,6 +4088,36 @@ static int64_t sys_msync(uint64_t address, uint64_t length, int flags) {
     return 0;
 }
 
+#define MLOCK_ONFAULT 1
+#define MCL_CURRENT   1
+#define MCL_FUTURE    2
+#define MCL_ONFAULT   4
+
+static int64_t sys_mlock(uint64_t address, uint64_t length, int flags) {
+    struct process *process = process_current();
+    if (!process || (flags & ~MLOCK_ONFAULT)) return -EINVAL;
+    uint64_t start = address & ~0xFFFULL;
+    if (length > USER_ADDRESS_LIMIT || address >= USER_ADDRESS_LIMIT) return -ENOMEM;
+    uint64_t end = align_up(address + length, 4096);
+    if (end > USER_ADDRESS_LIMIT) return -ENOMEM;
+    for (uint64_t page = start; page < end; page += 4096)
+        if (vmm_translate(process->cr3, page, NULL, NULL) != 0 && !process_find_area(page))
+            return -ENOMEM;
+    return 0;
+}
+
+static int64_t sys_munlock(uint64_t address, uint64_t length) {
+    return sys_mlock(address, length, 0);
+}
+
+static int64_t sys_mlockall(int flags) {
+    if (!flags || (flags & ~(MCL_CURRENT | MCL_FUTURE | MCL_ONFAULT))) return -EINVAL;
+    if (flags == MCL_ONFAULT) return -EINVAL;
+    return 0;
+}
+
+static int64_t sys_munlockall(void) { return 0; }
+
 static int64_t sys_munmap(uint64_t address, uint64_t length) {
     struct process *process = process_current();
     if (!process || (address & 0xFFFULL) || !length) return -EINVAL;
@@ -5665,6 +5700,8 @@ MEMORY_SYSCALL(mprotect, (uint64_t a, uint64_t b, int c), (a, b, c))
 MEMORY_SYSCALL(mremap, (uint64_t a, uint64_t b, uint64_t c, int d, uint64_t e), (a, b, c, d, e))
 MEMORY_SYSCALL(msync, (uint64_t a, uint64_t b, int c), (a, b, c))
 MEMORY_SYSCALL(munmap, (uint64_t a, uint64_t b), (a, b))
+MEMORY_SYSCALL(mlock, (uint64_t a, uint64_t b, int c), (a, b, c))
+MEMORY_SYSCALL(munlock, (uint64_t a, uint64_t b), (a, b))
 MEMORY_SYSCALL(shmat, (int a, uint64_t b, int c), (a, b, c))
 MEMORY_SYSCALL(shmdt, (uint64_t a), (a))
 MEMORY_SYSCALL(brk, (uint64_t a), (a))
@@ -6077,8 +6114,22 @@ static void syscall_run(struct syscall_frame *frame) {
             SYSCALL_ARG4(frame));
         break;
 
-    case SYS_MADVISE:   SYSCALL_RET(frame) = 0; break;
-    case SYS_FADVISE64: SYSCALL_RET(frame) = 0; break;
+    case SYS_MADVISE: SYSCALL_RET(frame) = 0; break;
+    case SYS_MLOCK:
+        SYSCALL_RET(frame) =
+            (uint64_t)memory_call_mlock(SYSCALL_ARG0(frame), SYSCALL_ARG1(frame), 0);
+        break;
+    case SYS_MLOCK2:
+        SYSCALL_RET(frame) = (uint64_t)memory_call_mlock(SYSCALL_ARG0(frame), SYSCALL_ARG1(frame),
+                                                         (int)SYSCALL_ARG2(frame));
+        break;
+    case SYS_MUNLOCK:
+        SYSCALL_RET(frame) =
+            (uint64_t)memory_call_munlock(SYSCALL_ARG0(frame), SYSCALL_ARG1(frame));
+        break;
+    case SYS_MLOCKALL: SYSCALL_RET(frame) = (uint64_t)sys_mlockall((int)SYSCALL_ARG0(frame)); break;
+    case SYS_MUNLOCKALL: SYSCALL_RET(frame) = (uint64_t)sys_munlockall(); break;
+    case SYS_FADVISE64:  SYSCALL_RET(frame) = 0; break;
     case SYS_MSYNC:
         SYSCALL_RET(frame) = (uint64_t)memory_call_msync(SYSCALL_ARG0(frame), SYSCALL_ARG1(frame),
                                                          (int)SYSCALL_ARG2(frame));
