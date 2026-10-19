@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fcntl.h>
+#include <sched.h>
 #include <spawn.h>
 #include <sys/resource.h>
 #include <sys/utsname.h>
@@ -181,6 +182,19 @@ TEST(process, proc_self_follows_a_change_of_user) {
         if (info < 0) _exit(2);
         char text[256];
         _exit(read(info, text, sizeof text) > 0 ? 0 : 3);
+    }
+    CHECK_EQ(exit_code(child), 0);
+}
+
+TEST(process, reset_on_fork_is_reported_and_not_inherited) {
+    pid_t child = fork();
+    if (child == 0) {
+        sched_param none = {};
+        if (sched_setscheduler(0, SCHED_OTHER | SCHED_RESET_ON_FORK, &none) != 0) _exit(1);
+        if (sched_getscheduler(0) != (SCHED_OTHER | SCHED_RESET_ON_FORK)) _exit(2);
+        pid_t grandchild = fork();
+        if (grandchild == 0) _exit(sched_getscheduler(0) == SCHED_OTHER ? 0 : 1);
+        _exit(exit_code(grandchild) == 0 ? 0 : 3);
     }
     CHECK_EQ(exit_code(child), 0);
 }

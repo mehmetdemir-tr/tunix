@@ -151,6 +151,7 @@ struct process {
     uint32_t time_slice_ticks;
     int policy;
     int rt_priority;
+    uint8_t reset_on_fork;
     int nice;
     struct cpu_mask affinity;
     uint8_t affinity_set;
@@ -293,6 +294,7 @@ uint64_t process_arg_limit(const struct process *process);
 #define PROCESS_SCHED_RR                     2
 #define PROCESS_SCHED_BATCH                  3
 #define PROCESS_SCHED_IDLE                   5
+#define PROCESS_SCHED_RESET_ON_FORK          0x40000000
 #define PROCESS_RT_PRIORITY_MAX              99
 #define PROCESS_RT_PRIORITY_UNPRIVILEGED_MAX 20
 

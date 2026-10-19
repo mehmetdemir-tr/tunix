@@ -1679,10 +1679,26 @@ static struct process *scheduling_target(uint64_t tid) {
     return process_find(tid);
 }
 
+static void inherit_scheduling(struct process *child, const struct process *parent) {
+    child->policy = parent->policy;
+    child->rt_priority = parent->rt_priority;
+    child->nice = parent->nice;
+    child->reset_on_fork = 0;
+    if (!parent->reset_on_fork) return;
+    if (child->policy == PROCESS_SCHED_FIFO || child->policy == PROCESS_SCHED_RR) {
+        child->policy = PROCESS_SCHED_OTHER;
+        child->rt_priority = 0;
+    }
+    if (child->nice < 0) child->nice = 0;
+}
+
 int process_set_scheduler(uint64_t tid, int policy, int rt_priority) {
     SCHED_LOCKED;
     struct process *target = scheduling_target(tid);
     if (!target) return -ESRCH;
+
+    int reset_on_fork = (policy & PROCESS_SCHED_RESET_ON_FORK) != 0;
+    policy &= ~PROCESS_SCHED_RESET_ON_FORK;
 
     int real_time = policy == PROCESS_SCHED_FIFO || policy == PROCESS_SCHED_RR;
     if (!real_time && policy != PROCESS_SCHED_OTHER && policy != PROCESS_SCHED_BATCH &&
@@ -1700,6 +1716,7 @@ int process_set_scheduler(uint64_t tid, int policy, int rt_priority) {
     if (queued) ready_unlink(target);
     target->policy = policy;
     target->rt_priority = real_time ? rt_priority : 0;
+    target->reset_on_fork = (uint8_t)reset_on_fork;
     if (queued) ready_link(target);
     return 0;
 }
@@ -1708,7 +1725,8 @@ int process_get_scheduler(uint64_t tid, int *policy, int *rt_priority) {
     SCHED_LOCKED;
     struct process *target = scheduling_target(tid);
     if (!target) return -ESRCH;
-    if (policy) *policy = target->policy;
+    if (policy)
+        *policy = target->policy | (target->reset_on_fork ? PROCESS_SCHED_RESET_ON_FORK : 0);
     if (rt_priority) *rt_priority = target->rt_priority;
     return 0;
 }
@@ -2825,9 +2843,7 @@ int64_t process_fork_from_syscall(struct syscall_frame *frame, const struct fork
     child->umask = parent->umask;
     child->cred = parent->cred;
     cred_groups_share(&child->cred);
-    child->policy = parent->policy;
-    child->rt_priority = parent->rt_priority;
-    child->nice = parent->nice;
+    inherit_scheduling(child, parent);
     child->virtual_runtime_ns = parent->virtual_runtime_ns;
     child->affinity = parent->affinity;
     child->affinity_set = parent->affinity_set;
@@ -2949,9 +2965,7 @@ int64_t process_clone_thread_from_syscall(struct syscall_frame *frame, uint64_t 
     child->umask = parent->umask;
     child->cred = parent->cred;
     cred_groups_share(&child->cred);
-    child->policy = parent->policy;
-    child->rt_priority = parent->rt_priority;
-    child->nice = parent->nice;
+    inherit_scheduling(child, parent);
     child->virtual_runtime_ns = parent->virtual_runtime_ns;
     child->affinity = parent->affinity;
     child->affinity_set = parent->affinity_set;
