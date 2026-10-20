@@ -38,10 +38,11 @@ static uint64_t clock_now(int clock_id) {
 
 static int timespec_to_ns(int64_t sec, int64_t nsec, uint64_t *out) {
     if (!out || sec < 0 || nsec < 0 || nsec >= 1000000000LL) return -EINVAL;
-    if ((uint64_t)sec > UINT64_MAX / 1000000000ULL) return -EINVAL;
-    uint64_t value = (uint64_t)sec * 1000000000ULL;
-    if (UINT64_MAX - value < (uint64_t)nsec) return -EINVAL;
-    *out = value + (uint64_t)nsec;
+    /* Linux saturates a time too far away to count instead of refusing it:
+     * systemd arms a timer at TIME_T_MAX that only ever means "never". */
+    uint64_t value =
+        (uint64_t)sec > UINT64_MAX / 1000000000ULL ? UINT64_MAX : (uint64_t)sec * 1000000000ULL;
+    *out = UINT64_MAX - value < (uint64_t)nsec ? UINT64_MAX : value + (uint64_t)nsec;
     return 0;
 }
 

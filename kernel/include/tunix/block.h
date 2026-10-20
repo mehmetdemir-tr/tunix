@@ -8,6 +8,10 @@
 
 #define BLOCK_NAME_BYTES 16
 
+#define BLOCK_MAJOR_SD       8U
+#define BLOCK_SD_MINORS      16U
+#define BLOCK_MAJOR_EXTENDED 259U
+
 struct block_device {
     char name[16];
 
@@ -15,6 +19,12 @@ struct block_device {
 
     int parent;
     uint64_t sectors;
+
+    /* Numbered the way Linux numbers SCSI disks, since every disk here is an
+     * sdX: major 8 with sixteen minors a disk, and partitions past the
+     * fifteenth in the extended major 259. */
+    uint32_t major;
+    uint32_t minor;
 
     int (*read)(void *context, uint64_t lba, uint32_t count, void *destination);
     int (*write)(void *context, uint64_t lba, uint32_t count, const void *source);

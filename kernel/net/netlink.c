@@ -138,6 +138,7 @@ struct netlink_datagram {
 struct netlink_socket {
     int refs;
     int protocol;
+    int type;
     uint32_t portid;
     int bound;
 
@@ -153,7 +154,7 @@ struct netlink_socket {
 static uint32_t netlink_next_portid = 0;
 static struct netlink_socket *netlink_registry = NULL;
 
-struct netlink_socket *netlink_socket_create(int protocol) {
+struct netlink_socket *netlink_socket_create(int protocol, int type) {
     NET_LOCKED;
     if (protocol != TUNIX_NETLINK_ROUTE && protocol != TUNIX_NETLINK_SOCK_DIAG &&
         protocol != TUNIX_NETLINK_KOBJECT_UEVENT && protocol != NETLINK_GENERIC)
@@ -163,6 +164,7 @@ struct netlink_socket *netlink_socket_create(int protocol) {
     memset(socket, 0, sizeof(*socket));
     socket->refs = 1;
     socket->protocol = protocol;
+    socket->type = type;
     socket->registry_next = netlink_registry;
     netlink_registry = socket;
     return socket;
@@ -205,6 +207,29 @@ int netlink_socket_bind(struct netlink_socket *socket, const void *address, size
 
     if (nl && length >= sizeof(*nl)) socket->groups = nl->groups;
     socket->bound = 1;
+    return 0;
+}
+
+int netlink_socket_type(struct netlink_socket *socket) {
+    NET_LOCKED;
+    return socket ? socket->type : 0;
+}
+
+int netlink_socket_protocol(struct netlink_socket *socket) {
+    NET_LOCKED;
+    return socket ? socket->protocol : 0;
+}
+
+uint32_t netlink_socket_groups(struct netlink_socket *socket) {
+    NET_LOCKED;
+    return socket ? socket->groups : 0;
+}
+
+int netlink_socket_set_membership(struct netlink_socket *socket, uint32_t group, int member) {
+    NET_LOCKED;
+    if (!socket || group == 0 || group > 32) return -1;
+    if (member) socket->groups |= 1U << (group - 1);
+    else socket->groups &= ~(1U << (group - 1));
     return 0;
 }
 
@@ -643,12 +668,18 @@ static void netlink_uevent_unicast(uint32_t portid, const void *data, size_t len
     }
 }
 
-void netlink_uevent_broadcast(const void *message, size_t length) {
+static void uevent_broadcast_locked(const void *message, size_t length) {
     NET_LOCKED;
-
     struct netlink_credentials kernel = {0, 0, 0};
     netlink_uevent_multicast(1U << (TUNIX_UEVENT_GROUP_KERNEL - 1), message, length, 0, &kernel,
                              NULL);
+}
+
+void netlink_uevent_broadcast(const void *message, size_t length) {
+    uevent_broadcast_locked(message, length);
+    /* Listeners sleep in poll and epoll on the shared I/O channel, woken once
+     * the network lock is no longer held. */
+    (void)process_wake_io();
 }
 
 int64_t netlink_socket_sendto(struct netlink_socket *socket, const void *data, size_t length,
@@ -759,6 +790,11 @@ int64_t netlink_socket_write(struct netlink_socket *socket, size_t length, const
 int netlink_socket_read_ready(struct netlink_socket *socket) {
     NET_LOCKED;
     return socket && socket->rx_head != NULL;
+}
+
+size_t netlink_socket_next_length(struct netlink_socket *socket) {
+    NET_LOCKED;
+    return socket && socket->rx_head ? socket->rx_head->length : 0;
 }
 
 int netlink_socket_write_ready(struct netlink_socket *socket) {

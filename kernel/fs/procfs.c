@@ -523,25 +523,24 @@ static int64_t proc_mountinfo_read(struct vfs_node *node, uint64_t offset, size_
                                    void *output) {
     (void)node;
     TEXT_BUFFER text = {0};
-    unsigned index = 0;
-    for (const struct vfs_mount *mount = vfs_mounts(); mount; mount = mount->next, index++) {
-        unsigned parent = 20U + index;
+    for (const struct vfs_mount *mount = vfs_mounts(); mount; mount = mount->next) {
+        unsigned parent = mount->id;
         size_t best = 0;
-        unsigned candidate = 0;
-        for (const struct vfs_mount *outer = vfs_mounts(); outer;
-             outer = outer->next, candidate++) {
+        for (const struct vfs_mount *outer = vfs_mounts(); outer; outer = outer->next) {
             if (outer == mount || !mount_contains(outer->target, mount->target)) continue;
             size_t length = strlen(outer->target);
             if (length >= best) {
                 best = length;
-                parent = 20U + candidate;
+                parent = outer->id;
             }
         }
-        text_unsigned(&text, 20U + index);
+        text_unsigned(&text, mount->id);
         text_char(&text, ' ');
         text_unsigned(&text, parent);
-        text_string(&text, " 0:");
-        text_unsigned(&text, 20U + index);
+        text_char(&text, ' ');
+        text_unsigned(&text, mount->dev_major);
+        text_char(&text, ':');
+        text_unsigned(&text, mount->dev_minor);
         text_string(&text, " / ");
         text_mount_path(&text, mount->target);
         text_string(&text, (mount->flags & VFS_MS_RDONLY) ? " ro" : " rw");
@@ -1205,11 +1204,15 @@ static int64_t proc_fdinfo_read(struct vfs_node *node, uint64_t offset, size_t s
     text_unsigned(&text, file->offset);
     text_string(&text, "\nflags:\t");
     text_octal(&text, flags);
-    text_string(&text, "\nmnt_id:\t0\nino:\t");
+    const struct vfs_mount *mount = file->node ? vfs_node_mount(file->node) : NULL;
+    text_string(&text, "\nmnt_id:\t");
+    text_unsigned(&text, mount ? mount->id : 0);
+    text_string(&text, "\nino:\t");
     text_unsigned(&text, file->kind == FILE_KIND_VFS && file->node ? file->node->inode : 0);
     text_string(&text, "\n");
     if (file->kind == FILE_KIND_PIDFD) {
-        int64_t pid = process_pidfd_exited(file->pidfd_pid, file->pidfd_start_ns)
+        /* A zombie still has its pid, as on Linux: only reaping takes it. */
+        int64_t pid = process_pidfd_reaped(file->pidfd_pid, file->pidfd_start_ns)
             ? -1
             : (int64_t)file->pidfd_pid;
         text_string(&text, "Pid:\t");

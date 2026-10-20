@@ -805,6 +805,12 @@ int process_pidfd_exited(uint64_t pid, uint64_t start_ns) {
     return !found || found->start_time_ns != start_ns || found->state == PROCESS_ZOMBIE;
 }
 
+int process_pidfd_reaped(uint64_t pid, uint64_t start_ns) {
+    SCHED_LOCKED;
+    struct process *found = process_find(pid);
+    return !found || found->start_time_ns != start_ns;
+}
+
 struct process *process_get(uint64_t pid) {
     SCHED_LOCKED;
     struct process *found = process_find(pid);

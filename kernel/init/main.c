@@ -170,6 +170,7 @@ void kmain(const struct boot_info *boot) {
     arch_route_legacy_interrupts();
     net_enable_interrupts();
     devfs_init();
+    vfs_mounts_find_devices();
     sysfs_init();
 #if TUNIX_DEBUG_LOGS
     kprintf("TUNIX: VFS rootfs devfs ready\n");

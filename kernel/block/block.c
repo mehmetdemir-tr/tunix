@@ -20,6 +20,7 @@ static struct block_device **devices;
 static int device_capacity;
 static int device_count;
 static int disk_count;
+static uint32_t extended_minors;
 static int root_index;
 
 static struct lock registry_lock = LOCK_INITIALIZER("block devices", LOCK_RANK_REGISTRY);
@@ -106,6 +107,8 @@ int block_register(const struct block_device *device) {
     entry->name[sizeof entry->name - 1] = '\0';
     entry->parent = -1;
     disk_name(disk_count, entry->dev_name);
+    entry->major = BLOCK_MAJOR_SD;
+    entry->minor = (uint32_t)disk_count * BLOCK_SD_MINORS;
     disk_count++;
     announce(device_count);
     int index = device_count;
@@ -131,6 +134,13 @@ int block_register_partition(int parent, int number, uint64_t start, uint64_t se
         lock_release(&registry_lock);
         kfree(context);
         return -1;
+    }
+    if (number < (int)BLOCK_SD_MINORS) {
+        entry->major = disk->major;
+        entry->minor = disk->minor + (uint32_t)number;
+    } else {
+        entry->major = BLOCK_MAJOR_EXTENDED;
+        entry->minor = extended_minors++;
     }
     memcpy(entry->name, disk->name, sizeof entry->name);
     memcpy(entry->dev_name, disk->dev_name, sizeof entry->dev_name);
