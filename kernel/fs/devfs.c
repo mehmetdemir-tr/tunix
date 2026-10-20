@@ -224,6 +224,8 @@ void devfs_add_block(int index) {
     if (!disk) return;
     disk->length = device->sectors * BLOCK_SECTOR_SIZE;
     disk->gid = DEV_GROUP_DISK;
+    disk->dev_major = device->major;
+    disk->dev_minor = device->minor;
 }
 
 void devfs_publish_sound(void) {

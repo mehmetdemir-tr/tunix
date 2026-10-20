@@ -1319,8 +1319,52 @@ int vfs_rename(const char *old_path, const char *new_path) {
 static void writeback_node(struct vfs_node *node);
 
 static struct vfs_mount *mount_table;
+static uint32_t next_mount_id = 20;
 
 const struct vfs_mount *vfs_mounts(void) { return mount_table; }
+
+static const struct vfs_mount *mount_rooted_at(const struct vfs_node *node) {
+    for (const struct vfs_mount *entry = mount_table; entry; entry = entry->next)
+        if (entry->root == node) return entry;
+    return NULL;
+}
+
+const struct vfs_mount *vfs_node_mount(const struct vfs_node *node) {
+    VFS_LOCKED;
+    for (const struct vfs_node *walk = node; walk && walk != vfs_root; walk = walk->parent) {
+        const struct vfs_mount *entry = mount_rooted_at(walk);
+        if (entry) return entry;
+    }
+    return mount_rooted_at(vfs_root);
+}
+
+int vfs_node_is_mount_root(const struct vfs_node *node) {
+    VFS_LOCKED;
+    return node && mount_rooted_at(node) != NULL;
+}
+
+static void mount_find_device(struct vfs_mount *entry) {
+    if (strncmp(entry->source, "/dev/", 5) != 0) return;
+    struct vfs_node *device = vfs_lookup(entry->source);
+    if (!device || (device->flags & 0xFFU) != VFS_BLOCKDEVICE || !device->dev_major) return;
+    entry->dev_major = device->dev_major;
+    entry->dev_minor = device->dev_minor;
+}
+
+static void mount_identify(struct vfs_mount *entry) {
+    entry->id = next_mount_id++;
+    entry->dev_major = 0;
+    entry->dev_minor = entry->id;
+    mount_find_device(entry);
+}
+
+/* The root is mounted before /dev exists, so its device is only known once
+ * devfs has made the block device nodes. */
+void vfs_mounts_find_devices(void) {
+    VFS_LOCKED;
+    for (struct vfs_mount *entry = mount_table; entry; entry = entry->next)
+        if (!entry->dev_major) mount_find_device(entry);
+}
 
 static void mount_field(char *out, size_t capacity, const char *value) {
     strncpy(out, value ? value : "", capacity - 1);
@@ -1355,6 +1399,7 @@ void vfs_mount_builtin(const char *source, const char *target, const char *type,
     mount_field(entry->target, sizeof(entry->target), target);
     mount_field(entry->type, sizeof(entry->type), type);
     entry->root = root;
+    mount_identify(entry);
     mount_insert(entry);
 }
 
@@ -1435,10 +1480,38 @@ static int mount_is_pseudo(const char *type) {
         strcmp(type, "devtmpfs") == 0 || strcmp(type, "devfs") == 0 || strcmp(type, "eventfs") == 0;
 }
 
+/* The path a mount point goes by: its directory resolved, then its own name.
+ * Resolving the whole path would look through a mount already there to the
+ * path of what is mounted, which for a bind mount is its source. A final
+ * symbolic link is still followed, as mount(2) and umount(2) do. */
 static int canonical_target(const char *target, char *out) {
-    struct vfs_node *node = vfs_lookup(target);
+    struct vfs_node *node = vfs_lookup_nofollow(target);
     if (!node) return -VFS_ENOENT;
-    if (vfs_node_path(node, out, VFS_PATH_MAX) != 0) return -VFS_EINVAL;
+    size_t length = strlen(target);
+    while (length > 1 && target[length - 1] == '/') length--;
+    size_t slash = length;
+    while (slash > 0 && target[slash - 1] != '/') slash--;
+    const char *name = target + slash;
+    size_t name_length = length - slash;
+    int plain = name_length && !(name_length == 1 && name[0] == '.') &&
+        !(name_length == 2 && name[0] == '.' && name[1] == '.');
+    if ((node->flags & 0xFFU) == VFS_SYMLINK || !plain || slash == 0) {
+        node = vfs_lookup(target);
+        if (!node) return -VFS_ENOENT;
+        return vfs_node_path(node, out, VFS_PATH_MAX) == 0 ? 0 : -VFS_EINVAL;
+    }
+
+    VFS_PATH_SCOPED directory = vfs_path_buffer();
+    if (!directory) return -VFS_ENOMEM;
+    memcpy(directory, target, slash);
+    directory[slash] = '\0';
+    struct vfs_node *parent = vfs_lookup(directory);
+    if (!parent || vfs_node_path(parent, out, VFS_PATH_MAX) != 0) return -VFS_ENOENT;
+    size_t at = strlen(out);
+    if (at > 1) out[at++] = '/';
+    if (at + name_length + 1 > VFS_PATH_MAX) return -VFS_EINVAL;
+    memcpy(out + at, name, name_length);
+    out[at + name_length] = '\0';
     return 0;
 }
 
@@ -1522,6 +1595,7 @@ int vfs_mount(const char *source, const char *target, const char *type, uint32_t
     entry->mountpoint = at;
     entry->root = root;
     entry->owns_root = owns_root;
+    mount_identify(entry);
 
     if (owns_root) {
         root->parent = at->parent;

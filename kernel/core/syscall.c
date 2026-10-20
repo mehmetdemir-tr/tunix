@@ -281,6 +281,7 @@ _Static_assert(offsetof(struct syscall_frame, user_rsp) == 136,
 #define SYS_SYMLINKAT              266
 #define SYS_READLINKAT             267
 #define SYS_FCHMODAT               268
+#define SYS_FCHMODAT2              452
 #define SYS_FACCESSAT              269
 #define SYS_PSELECT6               270
 #define SYS_PPOLL                  271
@@ -392,6 +393,13 @@ _Static_assert(offsetof(struct syscall_frame, user_rsp) == 136,
 #define MFD_NOEXEC_SEAL         0x0008U
 #define MFD_EXEC                0x0010U
 #define SIOCGIFCONF             0x8912U
+
+#define SO_PROTOCOL              38
+#define SO_DOMAIN                39
+#define SOL_NETLINK              270
+#define NETLINK_ADD_MEMBERSHIP   1
+#define NETLINK_DROP_MEMBERSHIP  2
+#define NETLINK_LIST_MEMBERSHIPS 9
 
 #define SEEK_SET 0
 #define SEEK_CUR 1
@@ -544,6 +552,7 @@ struct linux_clone_args {
 #define ENOSYS          38
 #define ENOTEMPTY       39
 #define ELOOP           40
+#define ENOPROTOOPT     92
 #define EOPNOTSUPP      95
 #define ENODATA         61
 #define ENOSPC          28
@@ -705,7 +714,14 @@ struct linux_statx {
 
 typedef char linux_statx_size_check[(sizeof(struct linux_statx) == 256) ? 1 : -1];
 
-#define STATX_BASIC_STATS 0x7FFU
+#define STATX_BASIC_STATS     0x7FFU
+#define STATX_MNT_ID          0x1000U
+#define STATX_MNT_ID_UNIQUE   0x4000U
+#define STATX_ATTR_MOUNT_ROOT 0x2000U
+
+/* Linux starts unique mount ids above every id it hands out the old way, so
+ * that the two kinds are never confused; ours are never reused either. */
+#define STATX_MNT_ID_UNIQUE_BASE 0x80000000ULL
 
 #define AT_STATX_SYNC_TYPE 0x6000
 
@@ -1705,7 +1721,7 @@ static int64_t sys_socket(int domain, int type, int protocol) {
     }
     if (domain == TUNIX_AF_NETLINK) {
         if (base_type != TUNIX_SOCK_RAW && base_type != TUNIX_SOCK_DGRAM) return -EPROTONOSUPPORT;
-        struct netlink_socket *socket = netlink_socket_create(protocol);
+        struct netlink_socket *socket = netlink_socket_create(protocol, base_type);
         if (!socket) return -EPROTONOSUPPORT;
         struct file *file = file_create_netlink_socket(socket);
         if (!file) {
@@ -1964,6 +1980,15 @@ static void accept_or_block(struct syscall_frame *frame, uint64_t syscall_number
 
 static uint8_t *stage_message(size_t length) { return (uint8_t *)kmalloc(length ? length : 1U); }
 
+/* A message for other sockets, a udev monitor's say, wakes whoever polls
+ * them; the network lock is dropped by then. */
+static int64_t netlink_send(struct netlink_socket *socket, const void *data, size_t length,
+                            int flags, const void *address, size_t address_length) {
+    int64_t result = netlink_socket_sendto(socket, data, length, flags, address, address_length);
+    if (result >= 0) (void)process_wake_io();
+    return result;
+}
+
 static int64_t unix_send_to_path(struct unix_socket *socket, const void *data, size_t length,
                                  uint64_t user_address, uint64_t address_length) {
     struct tunix_sockaddr_un address;
@@ -2039,9 +2064,8 @@ static int64_t sys_sendto(int fd, uint64_t user_data, size_t length, int flags,
         struct tunix_sockaddr_nl destination;
         int addressed = user_address && address_length >= sizeof(destination) &&
             copy_from_user(&destination, user_address, sizeof(destination)) == 0;
-        return netlink_socket_sendto(netlink, request, length, flags,
-                                     addressed ? &destination : NULL,
-                                     addressed ? sizeof(destination) : 0U);
+        return netlink_send(netlink, request, length, flags, addressed ? &destination : NULL,
+                            addressed ? sizeof(destination) : 0U);
     }
     struct inet_socket *socket = inet_socket_from_fd(fd);
     if (!socket) return -EBADF;
@@ -2092,7 +2116,10 @@ static int64_t sys_recvfrom(int fd, uint64_t user_data, size_t length, int flags
             netlink_socket_recvfrom(netlink, data, length, flags, user_address ? &nl_address : NULL,
                                     user_address ? &nl_length : NULL);
         if (result < 0) return result;
-        if (result && copy_to_user(user_data, data, (size_t)result) != 0) return -EFAULT;
+        /* With MSG_TRUNC the result is the whole datagram, of which only what
+         * fits was copied. */
+        size_t copied = (size_t)result < length ? (size_t)result : length;
+        if (copied && copy_to_user(user_data, data, copied) != 0) return -EFAULT;
         if (user_address) {
             if (copy_to_user(user_address, &nl_address, nl_length) != 0) return -EFAULT;
             if (user_address_length) {
@@ -2288,8 +2315,8 @@ static int64_t sys_sendmsg(int fd, uint64_t user_message, int flags) {
         struct tunix_sockaddr_nl destination;
         int addressed = message.name && message.name_length >= sizeof(destination) &&
             copy_from_user(&destination, message.name, sizeof(destination)) == 0;
-        return netlink_socket_sendto(netlink, data, length, flags, addressed ? &destination : NULL,
-                                     addressed ? sizeof(destination) : 0U);
+        return netlink_send(netlink, data, length, flags, addressed ? &destination : NULL,
+                            addressed ? sizeof(destination) : 0U);
     }
 
     if (!stream_socket) {
@@ -2534,7 +2561,8 @@ static int64_t sys_recvmsg(int fd, uint64_t user_message, int flags) {
                                                  message.name ? &nl_address : NULL,
                                                  message.name ? &nl_length : NULL);
         if (result < 0) return result;
-        if (scatter_message_data(&message, data, (size_t)result) != 0) return -EFAULT;
+        size_t copied = (size_t)result < capacity ? (size_t)result : capacity;
+        if (scatter_message_data(&message, data, copied) != 0) return -EFAULT;
         if (message.name) {
             size_t copy = message.name_length < nl_length ? message.name_length : nl_length;
             if (copy && copy_to_user(message.name, &nl_address, copy) != 0) return -EFAULT;
@@ -2542,7 +2570,7 @@ static int64_t sys_recvmsg(int fd, uint64_t user_message, int flags) {
         }
         int status = write_netlink_control(&message, netlink);
         if (status < 0) return status;
-        message.flags = 0;
+        message.flags = (size_t)result > capacity ? MSG_TRUNC : 0;
         if (copy_to_user(user_message, &message, sizeof(message)) != 0) return -EFAULT;
         return result;
     }
@@ -2634,15 +2662,21 @@ static int64_t sys_setsockopt(int fd, int level, int option, uint64_t user_value
     }
     struct netlink_socket *netlink_option = netlink_socket_from_fd(fd);
     if (netlink_option) {
-        if (level == SOL_SOCKET && option == SO_PASSCRED && length >= sizeof(int32_t)) {
-            int32_t enabled;
-            if (copy_from_user(&enabled, user_value, sizeof(enabled)) != 0) return -EFAULT;
-            netlink_socket_set_passcred(netlink_option, enabled != 0);
+        if (length < sizeof(int32_t)) return -EINVAL;
+        int32_t value;
+        if (copy_from_user(&value, user_value, sizeof(value)) != 0) return -EFAULT;
+        if (level == SOL_SOCKET && option == SO_PASSCRED) {
+            netlink_socket_set_passcred(netlink_option, value != 0);
             return 0;
         }
-
-        (void)user_value;
-        (void)length;
+        if (level == SOL_NETLINK &&
+            (option == NETLINK_ADD_MEMBERSHIP || option == NETLINK_DROP_MEMBERSHIP))
+            return netlink_socket_set_membership(netlink_option, (uint32_t)value,
+                                                 option == NETLINK_ADD_MEMBERSHIP) == 0
+                ? 0
+                : -EINVAL;
+        /* The rest change how replies and errors are framed in ways a client
+         * copes without, or only size buffers. */
         return 0;
     }
     struct inet_socket *socket = inet_socket_from_fd(fd);
@@ -2714,10 +2748,21 @@ static int64_t sys_getsockopt(int fd, int level, int option, uint64_t user_value
         }
         return -EOPNOTSUPP;
     }
-    if (netlink_socket_from_fd(fd)) {
-        (void)level;
-        (void)option;
-        int32_t value = 32768;
+    struct netlink_socket *netlink = netlink_socket_from_fd(fd);
+    if (netlink) {
+        int32_t value;
+        if (level == SOL_SOCKET && option == SO_TYPE) value = netlink_socket_type(netlink);
+        else if (level == SOL_SOCKET && option == SO_DOMAIN) value = TUNIX_AF_NETLINK;
+        else if (level == SOL_SOCKET && option == SO_PROTOCOL)
+            value = netlink_socket_protocol(netlink);
+        else if (level == SOL_SOCKET && option == SO_PASSCRED)
+            value = netlink_socket_get_passcred(netlink);
+        else if (level == SOL_SOCKET && (option == SO_ERROR || option == SO_ACCEPTCONN)) value = 0;
+        else if (level == SOL_SOCKET && (option == SO_SNDBUF || option == SO_RCVBUF)) value = 32768;
+        else if (level == SOL_NETLINK && option == NETLINK_LIST_MEMBERSHIPS)
+            value = (int32_t)netlink_socket_groups(netlink);
+        else if (level == SOL_NETLINK) value = 0;
+        else return -ENOPROTOOPT;
         if (supplied < sizeof(value)) return -EINVAL;
         if (copy_to_user(user_value, &value, sizeof(value)) != 0) return -EFAULT;
         uint32_t output_length = sizeof(value);
@@ -2766,14 +2811,23 @@ static int64_t sys_fallocate(int fd, int mode, uint64_t offset, uint64_t length)
 }
 
 static int64_t sys_faccess_at(int dirfd, uint64_t user_path, int mode, int flags) {
-    if (flags & ~(AT_EACCESS | AT_SYMLINK_NOFOLLOW)) return -EINVAL;
+    if (flags & ~(AT_EACCESS | AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH)) return -EINVAL;
     if (mode & ~7) return -EINVAL;
     VFS_PATH_SCOPED path = NULL;
-    int status = copy_path_at(dirfd, user_path, &path);
-    if (status != 0) return status;
-    struct vfs_node *node =
-        (flags & AT_SYMLINK_NOFOLLOW) ? vfs_lookup_nofollow(path) : vfs_lookup(path);
-    if (!node) return lookup_errno(path, !(flags & AT_SYMLINK_NOFOLLOW));
+    struct vfs_node *node = NULL;
+    char first = 0;
+    if ((flags & AT_EMPTY_PATH) && copy_from_user(&first, user_path, 1) != 0) return -EFAULT;
+    if ((flags & AT_EMPTY_PATH) && !first && dirfd >= 0) {
+        struct file *file = fd_file(dirfd);
+        if (!file) return -EBADF;
+        node = file->node;
+        if (!node) return mode ? -EACCES : 0;
+    } else {
+        int status = copy_path_at(dirfd, user_path, &path);
+        if (status != 0) return status;
+        node = (flags & AT_SYMLINK_NOFOLLOW) ? vfs_lookup_nofollow(path) : vfs_lookup(path);
+        if (!node) return lookup_errno(path, !(flags & AT_SYMLINK_NOFOLLOW));
+    }
 
     uint32_t want = 0;
     if (mode & 4) want |= CRED_READ;
@@ -2790,7 +2844,7 @@ static int64_t sys_faccess_at(int dirfd, uint64_t user_path, int mode, int flags
         cred->fsuid = cred->uid;
         cred->fsgid = cred->gid;
     }
-    int permitted = cred_may_path(path, node, want);
+    int permitted = path ? cred_may_path(path, node, want) : cred_may(node, want);
     if (swapped) {
         cred->fsuid = saved_uid;
         cred->fsgid = saved_gid;
@@ -2953,6 +3007,9 @@ static int64_t sys_ioctl(int fd, unsigned long request, uint64_t user_argument) 
         int32_t available = 0;
         switch (file->kind) {
         case FILE_KIND_SOCKET: available = (int32_t)unix_socket_read_available(file->socket); break;
+        case FILE_KIND_NETLINK_SOCKET:
+            available = (int32_t)netlink_socket_next_length(file->netlink_socket);
+            break;
         case FILE_KIND_PIPE_READ:
         case FILE_KIND_PIPE_WRITE:
         case FILE_KIND_PIPE_DUPLEX: available = file->pipe ? (int32_t)file->pipe->count : 0; break;
@@ -3030,6 +3087,11 @@ static int64_t sys_ioctl(int fd, unsigned long request, uint64_t user_argument) 
     return -ENOTTY;
 }
 
+static uint64_t encode_dev(uint64_t major, uint64_t minor) {
+    return ((major & 0xFFFULL) << 8) | (minor & 0xFFULL) | ((major & ~0xFFFULL) << 32) |
+        ((minor & ~0xFFULL) << 12);
+}
+
 static void fill_stat(struct vfs_node *node, struct linux_stat *stat) {
     memset(stat, 0, sizeof(*stat));
     stat->st_ino = node->inode;
@@ -3053,12 +3115,11 @@ static void fill_stat(struct vfs_node *node, struct linux_stat *stat) {
                                                  : (kind == VFS_SOCKET ? 0140000U : 0100000U)))));
 
     stat->st_mode = type | (node->mode & 07777U);
-    if (kind == VFS_CHARDEVICE || kind == VFS_BLOCKDEVICE) {
-        uint64_t major = node->dev_major;
-        uint64_t minor = node->dev_minor;
-        stat->st_rdev = ((major & 0xFFFULL) << 8) | (minor & 0xFFULL) |
-            ((major & ~0xFFFULL) << 32) | ((minor & ~0xFFULL) << 12);
-    }
+    if (kind == VFS_CHARDEVICE || kind == VFS_BLOCKDEVICE)
+        stat->st_rdev = encode_dev(node->dev_major, node->dev_minor);
+
+    const struct vfs_mount *mount = vfs_node_mount(node);
+    if (mount) stat->st_dev = encode_dev(mount->dev_major, mount->dev_minor);
 
     stat->st_atim.tv_sec = (int64_t)node->atime;
     stat->st_mtim.tv_sec = (int64_t)node->mtime;
@@ -3216,7 +3277,8 @@ static int64_t sys_fstat(int fd, uint64_t user_stat) {
     return copy_to_user(user_stat, &stat, sizeof(stat)) == 0 ? 0 : -EFAULT;
 }
 
-static void fill_statx(const struct linux_stat *basic_in, struct linux_statx *out) {
+static void fill_statx(const struct linux_stat *basic_in, const struct vfs_node *node,
+                       uint32_t mask, struct linux_statx *out) {
     struct linux_stat basic = *basic_in;
 
     memset(out, 0, sizeof(*out));
@@ -3236,11 +3298,26 @@ static void fill_statx(const struct linux_stat *basic_in, struct linux_statx *ou
     out->stx_rdev_major =
         (uint32_t)(((basic.st_rdev >> 8) & 0xFFFU) | ((basic.st_rdev >> 32) & ~0xFFFU));
     out->stx_rdev_minor = (uint32_t)((basic.st_rdev & 0xFFU) | ((basic.st_rdev >> 12) & ~0xFFU));
+    out->stx_dev_major =
+        (uint32_t)(((basic.st_dev >> 8) & 0xFFFU) | ((basic.st_dev >> 32) & ~0xFFFU));
+    out->stx_dev_minor = (uint32_t)((basic.st_dev & 0xFFU) | ((basic.st_dev >> 12) & ~0xFFU));
+
+    if (!node) return;
+    out->stx_attributes_mask = STATX_ATTR_MOUNT_ROOT;
+    if (vfs_node_is_mount_root(node)) out->stx_attributes |= STATX_ATTR_MOUNT_ROOT;
+    const struct vfs_mount *mount = vfs_node_mount(node);
+    if (!mount) return;
+    if (mask & STATX_MNT_ID_UNIQUE) {
+        out->stx_mask |= STATX_MNT_ID_UNIQUE;
+        out->stx_mnt_id = STATX_MNT_ID_UNIQUE_BASE + mount->id;
+    } else {
+        out->stx_mask |= STATX_MNT_ID;
+        out->stx_mnt_id = mount->id;
+    }
 }
 
 static int64_t sys_statx(int dirfd, uint64_t user_path, int flags, uint32_t mask,
                          uint64_t user_buf) {
-    (void)mask;
     if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH | AT_NO_AUTOMOUNT | AT_STATX_SYNC_TYPE))
         return -EINVAL;
 
@@ -3248,22 +3325,23 @@ static int64_t sys_statx(int dirfd, uint64_t user_path, int flags, uint32_t mask
     if (copy_from_user(&first, user_path, 1) != 0) return -EFAULT;
 
     struct linux_stat basic;
+    struct vfs_node *node = NULL;
     if (!first && (flags & AT_EMPTY_PATH) && dirfd >= 0) {
         struct process *process = process_current();
         if (!process || dirfd >= PROCESS_FD_CAPACITY(process) || !fd_file(dirfd)) return -EBADF;
         if (stat_from_file(fd_file(dirfd), &basic) != 0) return -EBADF;
+        node = fd_file(dirfd)->node;
     } else {
         VFS_PATH_SCOPED path = NULL;
         int status = copy_path_at(dirfd, user_path, &path);
         if (status != 0) return status;
-        struct vfs_node *node =
-            (flags & AT_SYMLINK_NOFOLLOW) ? vfs_lookup_nofollow(path) : vfs_lookup(path);
+        node = (flags & AT_SYMLINK_NOFOLLOW) ? vfs_lookup_nofollow(path) : vfs_lookup(path);
         if (!node) return lookup_errno(path, !(flags & AT_SYMLINK_NOFOLLOW));
         fill_stat(node, &basic);
     }
 
     struct linux_statx out;
-    fill_statx(&basic, &out);
+    fill_statx(&basic, node, mask, &out);
     return copy_to_user(user_buf, &out, sizeof(out)) == 0 ? 0 : -EFAULT;
 }
 
@@ -3682,8 +3760,32 @@ static int64_t change_owner(struct vfs_node *node, uint32_t uid, uint32_t gid) {
     return 0;
 }
 
+/* An *at() call given AT_EMPTY_PATH and an empty path acts on what the
+ * descriptor refers to, however it was opened, O_PATH included. Returns 1 with
+ * *node set (NULL for a descriptor with no inode, such as a pipe) when the call
+ * has that form, 0 when it names a path, or an error. */
+static int64_t empty_path_target(int dirfd, uint64_t user_path, int flags, struct vfs_node **node) {
+    *node = NULL;
+    if (!(flags & AT_EMPTY_PATH)) return 0;
+    char first = 0;
+    if (user_path && copy_from_user(&first, user_path, 1) != 0) return -EFAULT;
+    if (first) return 0;
+    if (dirfd == AT_FDCWD) {
+        *node = process_current()->cwd;
+        return 1;
+    }
+    struct file *file = fd_file(dirfd);
+    if (!file) return -EBADF;
+    *node = file->node;
+    return 1;
+}
+
 static int64_t sys_chmod_at(int dirfd, uint64_t user_path, uint32_t mode, int flags) {
-    if (flags & ~AT_SYMLINK_NOFOLLOW) return -EINVAL;
+    if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH)) return -EINVAL;
+    struct vfs_node *target;
+    int64_t empty = empty_path_target(dirfd, user_path, flags, &target);
+    if (empty < 0) return empty;
+    if (empty) return target ? change_mode(target, mode) : 0;
     VFS_PATH_SCOPED path = NULL;
     int status = copy_path_at(dirfd, user_path, &path);
     if (status != 0) return status;
@@ -3699,11 +3801,10 @@ static int64_t sys_fchown(int fd, uint32_t uid, uint32_t gid);
 
 static int64_t sys_chown_at(int dirfd, uint64_t user_path, uint32_t uid, uint32_t gid, int flags) {
     if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH)) return -EINVAL;
-    if (flags & AT_EMPTY_PATH) {
-        char first = 0;
-        if (copy_from_user(&first, user_path, 1) != 0) return -EFAULT;
-        if (!first && dirfd >= 0) return sys_fchown(dirfd, uid, gid);
-    }
+    struct vfs_node *target;
+    int64_t empty = empty_path_target(dirfd, user_path, flags, &target);
+    if (empty < 0) return empty;
+    if (empty) return target ? change_owner(target, uid, gid) : 0;
     VFS_PATH_SCOPED path = NULL;
     int status = copy_path_at(dirfd, user_path, &path);
     if (status != 0) return status;
@@ -3733,10 +3834,14 @@ static int64_t sys_fchmod(int fd, uint32_t mode) {
 #define UTIME_OMIT 0x3FFFFFFE
 
 static int64_t sys_utimens_at(int dirfd, uint64_t user_path, uint64_t user_times, int flags) {
-    if (flags & ~AT_SYMLINK_NOFOLLOW) return -EINVAL;
+    if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH)) return -EINVAL;
 
     struct vfs_node *node = NULL;
-    if (!user_path) {
+    int64_t empty = empty_path_target(dirfd, user_path, flags, &node);
+    if (empty < 0) return empty;
+    if (empty) {
+        if (!node) return -EBADF;
+    } else if (!user_path) {
         struct process *process = process_current();
         if (!process || dirfd < 0 || dirfd >= PROCESS_FD_CAPACITY(process) || !fd_file(dirfd))
             return -EBADF;
@@ -5431,7 +5536,7 @@ static int64_t sys_memfd_create(uint64_t user_name, uint32_t flags) {
     struct memfd_object *object = memfd_create_object();
     if (!object) return -ENOMEM;
     if (flags & MFD_ALLOW_SEALING) memfd_allow_sealing(object);
-    struct file *file = file_create_memfd(object, 0);
+    struct file *file = file_create_memfd(object, O_RDWR | O_LARGEFILE);
     if (!file) {
         memfd_destroy(object);
         return -ENOMEM;
@@ -6013,7 +6118,7 @@ static int64_t sys_pidfd_send_signal(int fd, int signal_number, uint64_t user_in
     if (flags) return -EINVAL;
     struct file *file = file_from_fd(fd);
     if (!file || file->kind != FILE_KIND_PIDFD) return -EBADF;
-    if (process_pidfd_exited(file->pidfd_pid, file->pidfd_start_ns)) return -ESRCH;
+    if (process_pidfd_reaped(file->pidfd_pid, file->pidfd_start_ns)) return -ESRCH;
     if (!user_info) return process_send_signal_checked((int64_t)file->pidfd_pid, signal_number);
     if (signal_number < 0 || signal_number > TUNIX_NSIG) return -EINVAL;
     struct signal_info info;
@@ -7381,6 +7486,11 @@ static void syscall_run(struct syscall_frame *frame) {
     case SYS_FCHMODAT:
         SYSCALL_RET(frame) = (uint64_t)sys_chmod_at((int)SYSCALL_ARG0(frame), SYSCALL_ARG1(frame),
                                                     (uint32_t)SYSCALL_ARG2(frame), 0);
+        break;
+    case SYS_FCHMODAT2:
+        SYSCALL_RET(frame) =
+            (uint64_t)sys_chmod_at((int)SYSCALL_ARG0(frame), SYSCALL_ARG1(frame),
+                                   (uint32_t)SYSCALL_ARG2(frame), (int)SYSCALL_ARG3(frame));
         break;
     case SYS_UTIMENSAT:
         SYSCALL_RET(frame) =

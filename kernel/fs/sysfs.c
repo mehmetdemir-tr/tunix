@@ -40,6 +40,8 @@ static void append_number(char *out, size_t limit, size_t *used, uint32_t value)
     while (count-- > 0 && *used + 1 < limit) out[(*used)++] = digits[count];
 }
 
+#define EINVAL 22
+
 struct sysfs_device {
     char devpath[64];
     char properties[256];
@@ -51,8 +53,9 @@ static size_t sysfs_device_count;
 static size_t sysfs_device_capacity;
 static uint32_t sysfs_sequence;
 
-static void uevent_send(const struct sysfs_device *device, const char *action) {
-    char message[512];
+static void uevent_send_with(const struct sysfs_device *device, const char *action,
+                             const char *extra, size_t extra_length) {
+    char message[768];
     size_t used = 0;
     append_string(message, sizeof(message), &used, action);
     append_string(message, sizeof(message), &used, "@");
@@ -70,9 +73,11 @@ static void uevent_send(const struct sysfs_device *device, const char *action) {
     if (used + 1 >= sizeof(message)) return;
     message[used++] = '\0';
 
-    if (used + device->properties_length >= sizeof(message)) return;
+    if (used + device->properties_length + extra_length >= sizeof(message)) return;
     memcpy(message + used, device->properties, device->properties_length);
     used += device->properties_length;
+    if (extra_length) memcpy(message + used, extra, extra_length);
+    used += extra_length;
 
     append_string(message, sizeof(message), &used, "SEQNUM=");
     append_number(message, sizeof(message), &used, ++sysfs_sequence);
@@ -82,6 +87,21 @@ static void uevent_send(const struct sysfs_device *device, const char *action) {
     netlink_uevent_broadcast(message, used);
 }
 
+static void uevent_send(const struct sysfs_device *device, const char *action) {
+    uevent_send_with(device, action, NULL, 0);
+}
+
+static int uevent_action_known(const char *action) {
+    static const char *const actions[] = {"add",    "remove",  "change", "move",
+                                          "online", "offline", "bind",   "unbind"};
+    for (size_t index = 0; index < sizeof(actions) / sizeof(actions[0]); index++)
+        if (strcmp(action, actions[index]) == 0) return 1;
+    return 0;
+}
+
+/* "ACTION [UUID [KEY=VALUE ...]]", as udevadm trigger writes it: the event
+ * then carries SYNTH_UUID and a SYNTH_ARG_ for every argument, so that the
+ * writer can tell its own events apart. */
 static int64_t uevent_write(struct vfs_node *node, uint64_t offset, size_t size,
                             const void *buffer) {
     VFS_GUARD;
@@ -89,15 +109,39 @@ static int64_t uevent_write(struct vfs_node *node, uint64_t offset, size_t size,
     const struct sysfs_device *device = (const struct sysfs_device *)node->fs_private;
     if (!device || !size) return (int64_t)size;
 
-    char action[16];
-    size_t length = 0;
     const char *text = (const char *)buffer;
-    while (length < size && length + 1 < sizeof(action) && text[length] != '\n' &&
-           text[length] != '\0')
-        length++;
-    memcpy(action, text, length);
-    action[length] = '\0';
-    if (action[0]) uevent_send(device, action);
+    size_t end = 0;
+    while (end < size && text[end] != '\n' && text[end] != '\0') end++;
+    char words[8][96];
+    unsigned count = 0;
+    for (size_t at = 0; at < end && count < 8;) {
+        while (at < end && text[at] == ' ') at++;
+        size_t start = at;
+        while (at < end && text[at] != ' ') at++;
+        size_t length = at - start;
+        if (!length) break;
+        if (length >= sizeof(words[0])) return -EINVAL;
+        memcpy(words[count], text + start, length);
+        words[count++][length] = '\0';
+    }
+    if (!count || !uevent_action_known(words[0])) return -EINVAL;
+
+    char extra[512];
+    size_t used = 0;
+    if (count > 1) {
+        append_string(extra, sizeof(extra), &used, "SYNTH_UUID=");
+        append_string(extra, sizeof(extra), &used, words[1]);
+        if (used + 1 < sizeof(extra)) extra[used++] = '\0';
+    }
+    for (unsigned index = 2; index < count; index++) {
+        const char *equals = words[index];
+        while (*equals && *equals != '=') equals++;
+        if (!*equals) return -EINVAL;
+        append_string(extra, sizeof(extra), &used, "SYNTH_ARG_");
+        append_string(extra, sizeof(extra), &used, words[index]);
+        if (used + 1 < sizeof(extra)) extra[used++] = '\0';
+    }
+    uevent_send_with(device, words[0], extra, used);
     return (int64_t)size;
 }
 

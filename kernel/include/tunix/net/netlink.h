@@ -27,7 +27,12 @@ struct tunix_sockaddr_nl {
     uint32_t groups;
 };
 
-struct netlink_socket *netlink_socket_create(int protocol);
+struct netlink_socket *netlink_socket_create(int protocol, int type);
+int netlink_socket_type(struct netlink_socket *socket);
+int netlink_socket_protocol(struct netlink_socket *socket);
+uint32_t netlink_socket_groups(struct netlink_socket *socket);
+/* NETLINK_ADD_MEMBERSHIP and NETLINK_DROP_MEMBERSHIP for groups 1 to 32. */
+int netlink_socket_set_membership(struct netlink_socket *socket, uint32_t group, int member);
 void netlink_socket_ref(struct netlink_socket *socket);
 void netlink_socket_unref(struct netlink_socket *socket);
 
@@ -42,6 +47,7 @@ int64_t netlink_socket_read(struct netlink_socket *socket, size_t length, void *
 int64_t netlink_socket_write(struct netlink_socket *socket, size_t length, const void *data);
 
 int netlink_socket_read_ready(struct netlink_socket *socket);
+size_t netlink_socket_next_length(struct netlink_socket *socket);
 int netlink_socket_write_ready(struct netlink_socket *socket);
 
 void netlink_socket_set_passcred(struct netlink_socket *socket, int on);

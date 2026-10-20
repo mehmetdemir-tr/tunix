@@ -160,6 +160,13 @@ struct vfs_mount {
     char target[VFS_PATH_MAX];
     char type[16];
     uint32_t flags;
+    /* Never reused, so it identifies the mount in /proc/self/mountinfo and
+     * statx()'s stx_mnt_id for as long as it exists. */
+    uint32_t id;
+    /* The st_dev of every file on it: the block device for a disk, 0:id for
+     * anything else, as Linux hands anonymous filesystems. */
+    uint32_t dev_major;
+    uint32_t dev_minor;
     struct vfs_node *mountpoint;
     struct vfs_node *root;
     int owns_root;
@@ -173,6 +180,9 @@ int vfs_umount(const char *target, int detach);
 void vfs_mount_builtin(const char *source, const char *target, const char *type,
                        struct vfs_node *root);
 const struct vfs_mount *vfs_mounts(void);
+const struct vfs_mount *vfs_node_mount(const struct vfs_node *node);
+int vfs_node_is_mount_root(const struct vfs_node *node);
+void vfs_mounts_find_devices(void);
 
 struct vfs_persist_ops {
     void (*created)(struct vfs_node *node);
