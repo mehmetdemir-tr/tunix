@@ -21,7 +21,7 @@ the menu comes up at 1024x768 with a 16:9 wallpaper stretched into it.
 | Partition | Contents |
 | --- | --- |
 | `sda1`, 64 MiB, FAT32, EFI system | `EFI/BOOT/BOOTX64.EFI`, `boot/limine/limine-bios.sys`, `boot/limine/limine.conf`, `boot/kernel.elf` |
-| `sda2`, ext3 | the root filesystem |
+| `sda2`, ext4 | the root filesystem |
 
 The two firmwares take different paths into the same partition:
 

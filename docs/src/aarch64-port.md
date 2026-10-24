@@ -129,13 +129,13 @@ UEFI boot runs at that size on QEMU; the direct boot sets ramfb to 1280x720.
 `make image-aarch64` builds the same image the x86-64 build does — Void's base,
 the package list in `GNUmakefile` with Weston, Mesa and Firefox, and
 `base-files/` over it — from Void's aarch64 repository. It needs no root: the
-sysroot and the ext3 image are assembled inside a user namespace
+sysroot and the ext4 image are assembled inside a user namespace
 (`unshare --map-auto --map-root-user`), which is enough for `chown` and for
 `mke2fs -d` to record real ownership, and the packages' install scripts run
 through the host's `qemu-aarch64` binfmt handler.
 
 ```sh
-make image-aarch64           # -> build/tunix-aarch64.img, GPT with an ESP and an ext3 root
+make image-aarch64           # -> build/tunix-aarch64.img, GPT with an ESP and an ext4 root
 make run-aarch64-image       # virt, UEFI, ramfb, xHCI keyboard and mouse, virtio-net, NVMe
 ```
 
@@ -155,7 +155,7 @@ make run-aarch64-core QEMU_AARCH64_CORE_DISKS="-drive file=disk.img,if=none,id=n
     -device nvme,drive=nv0,serial=tunix -append root=LABEL=tunix-root"
 ```
 
-The toolchain is `aarch64-linux-gnu-gcc`. A root disk is an ext2/ext3 image made
+The toolchain is `aarch64-linux-gnu-gcc`. A root disk is an ext4 image made
 with the same `mkfs` options `tools/image.sh` uses for x86-64:
 
 ```sh
@@ -163,9 +163,7 @@ mkdir -p root/sbin root/dev root/proc root/sys root/tmp
 aarch64-linux-gnu-gcc -static -nostdlib -nostartfiles -ffreestanding -O2 \
     -fno-pie -no-pie -fno-builtin testsuites/kernel-tests/process.c -o root/sbin/init
 truncate -s 64M disk.img
-mkfs.ext3 -q -r 1 -b 4096 -I 128 -m 1 -L tunix-root \
-    -O ^resize_inode,^dir_index,^ext_attr,^metadata_csum,^64bit,^huge_file,^dir_nlink,^extra_isize \
-    -d root disk.img
+mkfs.ext4 -q -b 4096 -I 256 -m 1 -L tunix-root -d root disk.img
 ```
 
 The tests boot the same way on either architecture; `make test-aarch64`

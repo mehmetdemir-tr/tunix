@@ -18,5 +18,6 @@ int64_t acl_xattr_list(struct vfs_node *node, char *out, size_t size);
 int acl_permission(const struct vfs_node *node, const struct credentials *cred, uint32_t want,
                    int *decided);
 void acl_release(struct vfs_node *node);
+int acl_import(struct vfs_node *node, const void *value, size_t size);
 
 #endif

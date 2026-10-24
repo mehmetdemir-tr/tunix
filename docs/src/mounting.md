@@ -16,7 +16,7 @@ spell the path the caller actually walked, without a single special case in
 either. The mountpoint node keeps its own children; they are simply
 unreachable until the filesystem is unmounted, exactly as on Linux.
 
-A tmpfs root is marked `VFS_VOLATILE`, which is what stops the ext2 driver
+A tmpfs root is marked `VFS_VOLATILE`, which is what stops the ext4 driver
 writing any of it to the disk. That flag, not the mount, is what makes it a
 temporary filesystem.
 
@@ -26,13 +26,15 @@ temporary filesystem.
 |---|---|
 | `tmpfs`, `ramfs` | a fresh, empty, RAM-only tree |
 | `--bind` (`MS_BIND`) | show a directory that already exists at a second place |
+| `ext2`, `ext3`, `ext4` | a filesystem on a block device, read through the ext4 driver |
+| `vfat`, `fat`, `msdos` | a FAT filesystem on a block device |
 | `proc`, `sysfs`, `devtmpfs` | already mounted where they belong; mounting one elsewhere is refused, since only their own drivers can build them |
 | anything else | `ENODEV` |
 
 `/proc/mounts` is the real table, root first:
 
 ```
-/dev/sda / ext3 rw 0 0
+/dev/sda2 / ext4 rw 0 0
 tmpfs /tmp tmpfs rw 0 0
 tmpfs /var/tmp tmpfs rw 0 0
 tmpfs /run tmpfs rw 0 0
@@ -62,16 +64,12 @@ An unknown `-o` name is an error rather than being ignored — silently dropping
 
 ## Limits
 
-- **No block-device filesystem can be mounted.** `ext2.c` keeps its superblock,
-  group descriptors, caches and persistence hooks in file-scope globals, and
-  `vfs_persist_ops` has no per-mount context, so exactly one such volume can
-  exist — the root. Mounting a second disk means making that driver
-  multi-instance first.
 - Only one filesystem per mountpoint: mounting over an existing mount is
   refused with `EBUSY` rather than stacked, because two entries with the same
   target would leave `umount` unable to say which it meant.
-- `MS_RDONLY`, `MS_NOSUID`, `MS_NODEV` and `MS_NOEXEC` are recorded and
-  reported in `/proc/mounts`, but **nothing enforces them**.
+- `MS_RDONLY` makes an ext filesystem read-only when it is mounted; on other
+  mounts it, `MS_NOSUID`, `MS_NODEV` and `MS_NOEXEC` are recorded and reported
+  in `/proc/mounts`, but **nothing enforces them**.
 - Mounts are global. There are no mount namespaces, so one process's mount is
   every process's mount, and only root may call `mount`.
 - A bind mount resolves paths correctly, but `getcwd` inside one reports the

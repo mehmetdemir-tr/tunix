@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include <tunix/abi_gaps.h>
 #include <tunix/cpu.h>
-#include <tunix/ext2.h>
+#include <tunix/ext4.h>
 #include <tunix/heap.h>
 #include <tunix/irq.h>
 #include <tunix/file.h>
@@ -1211,7 +1211,6 @@ static int64_t proc_fdinfo_read(struct vfs_node *node, uint64_t offset, size_t s
     text_unsigned(&text, file->kind == FILE_KIND_VFS && file->node ? file->node->inode : 0);
     text_string(&text, "\n");
     if (file->kind == FILE_KIND_PIDFD) {
-        /* A zombie still has its pid, as on Linux: only reaping takes it. */
         int64_t pid = process_pidfd_reaped(file->pidfd_pid, file->pidfd_start_ns)
             ? -1
             : (int64_t)file->pidfd_pid;

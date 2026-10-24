@@ -5,7 +5,7 @@
 #include <tunix/ata.h>
 #endif
 #include <tunix/cpu.h>
-#include <tunix/ext2.h>
+#include <tunix/ext4.h>
 #include <tunix/input.h>
 #include <tunix/vfs.h>
 #include <tunix/platform.h>
@@ -16,7 +16,7 @@ extern void kprintf(const char *fmt, ...);
 
 static void flush_disks(void) {
     (void)vfs_sync();
-    (void)ext2fs_shutdown();
+    (void)ext4fs_shutdown();
 #if defined(__x86_64__)
     (void)ata_flush_cache();
 #endif

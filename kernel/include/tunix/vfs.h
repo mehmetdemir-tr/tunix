@@ -52,6 +52,7 @@
 
 struct vfs_node;
 struct vfs_acl;
+struct vfs_xattr;
 struct posix_lock;
 struct file;
 struct pipe_buffer;
@@ -83,6 +84,11 @@ struct vfs_node {
     uint32_t atime;
     uint32_t mtime;
     uint32_t ctime;
+    uint32_t atime_ns;
+    uint32_t mtime_ns;
+    uint32_t ctime_ns;
+    uint32_t btime;
+    uint32_t btime_ns;
     uint64_t inode;
     uint64_t length;
     uint64_t capacity;
@@ -133,6 +139,8 @@ struct vfs_node {
     struct vfs_node *wb_next;
     struct vfs_node *wb_prev;
     struct vfs_acl *acl;
+    struct vfs_xattr *xattrs;
+    uint8_t xattr_dirty;
 };
 
 struct vfs_writeback {
@@ -142,6 +150,9 @@ struct vfs_writeback {
     uint32_t atime;
     uint32_t mtime;
     uint32_t ctime;
+    uint32_t atime_ns;
+    uint32_t mtime_ns;
+    uint32_t ctime_ns;
     uint32_t count;
     const uint64_t *indices;
     uint8_t *const *pages;
@@ -160,11 +171,7 @@ struct vfs_mount {
     char target[VFS_PATH_MAX];
     char type[16];
     uint32_t flags;
-    /* Never reused, so it identifies the mount in /proc/self/mountinfo and
-     * statx()'s stx_mnt_id for as long as it exists. */
     uint32_t id;
-    /* The st_dev of every file on it: the block device for a disk, 0:id for
-     * anything else, as Linux hands anonymous filesystems. */
     uint32_t dev_major;
     uint32_t dev_minor;
     struct vfs_node *mountpoint;
@@ -271,6 +278,8 @@ struct vfs_node *vfs_create_file_node(const char *path, uint32_t mode);
 struct vfs_node *vfs_create_directory(const char *path, uint32_t mode);
 struct vfs_node *vfs_create_fifo(const char *path, uint32_t mode);
 struct vfs_node *vfs_create_socket_node(const char *path, uint32_t mode);
+struct vfs_node *vfs_create_device(const char *path, uint32_t mode, uint32_t kind, uint32_t major,
+                                   uint32_t minor);
 struct vfs_node *vfs_create_symlink(const char *path, const char *target, uint32_t flags);
 struct vfs_node *vfs_attach_symlink(struct vfs_node *parent, const char *name, const char *target);
 int vfs_detach_child(struct vfs_node *parent, struct vfs_node *node);

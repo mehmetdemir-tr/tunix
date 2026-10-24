@@ -12,11 +12,12 @@
 #include <tunix/inotify.h>
 #include <tunix/kstring.h>
 #include <tunix/time.h>
-#include <tunix/ext2.h>
+#include <tunix/ext4.h>
 #include <tunix/fatfs.h>
 #include <tunix/pipe.h>
 #include <tunix/process.h>
 #include <tunix/vfs.h>
+#include <tunix/xattr.h>
 
 extern void kprintf(const char *fmt, ...);
 
@@ -56,10 +57,21 @@ void vfs_set_persist_ops(const struct vfs_persist_ops *ops) { persist_ops = ops;
 void vfs_stamp_times(struct vfs_node *node, uint32_t which) {
     VFS_LOCKED;
     if (!node) return;
-    uint32_t now = (uint32_t)time_epoch_seconds();
-    if (which & VFS_TIME_ATIME) node->atime = now;
-    if (which & VFS_TIME_MTIME) node->mtime = now;
-    if (which & VFS_TIME_CTIME) node->ctime = now;
+    uint64_t clock = time_realtime_ns();
+    uint32_t now = (uint32_t)(clock / 1000000000ULL);
+    uint32_t nano = (uint32_t)(clock % 1000000000ULL);
+    if (which & VFS_TIME_ATIME) {
+        node->atime = now;
+        node->atime_ns = nano;
+    }
+    if (which & VFS_TIME_MTIME) {
+        node->mtime = now;
+        node->mtime_ns = nano;
+    }
+    if (which & VFS_TIME_CTIME) {
+        node->ctime = now;
+        node->ctime_ns = nano;
+    }
 }
 
 static void directory_changed(struct vfs_node *directory) {
@@ -390,6 +402,7 @@ void vfs_free_node(struct vfs_node *node) {
     cursor_forget(node);
     index_drop(node);
     acl_release(node);
+    vfs_xattr_release(node);
     defer_free(node->name);
     defer_free(node);
 }
@@ -1065,7 +1078,7 @@ struct vfs_node *vfs_create_fifo(const char *path, uint32_t mode) {
     if (!parent || (parent->flags & 0xFFU) != VFS_DIRECTORY) return NULL;
     if (vfs_find_child(parent, name)) return NULL;
 
-    struct vfs_node *node = vfs_alloc_node(name, VFS_PIPE | VFS_VOLATILE);
+    struct vfs_node *node = vfs_alloc_node(name, VFS_PIPE);
     if (!node) return NULL;
     node->mode = mode & 07777U;
     if (vfs_attach(parent, node) != 0) {
@@ -1076,6 +1089,32 @@ struct vfs_node *vfs_create_fifo(const char *path, uint32_t mode) {
     node->mode = mode & 07777U;
     directory_changed(parent);
     inotify_notify(parent, TUNIX_IN_CREATE, name, 0);
+    PERSIST(created, node);
+    return node;
+}
+
+struct vfs_node *vfs_create_device(const char *path, uint32_t mode, uint32_t kind, uint32_t major,
+                                   uint32_t minor) {
+    VFS_LOCKED;
+    if (kind != VFS_CHARDEVICE && kind != VFS_BLOCKDEVICE) return NULL;
+    char name[VFS_NAME_MAX + 1];
+    struct vfs_node *parent = parent_of(path, name, 0);
+    if (!parent || (parent->flags & 0xFFU) != VFS_DIRECTORY) return NULL;
+    if (vfs_find_child(parent, name)) return NULL;
+
+    struct vfs_node *node = vfs_alloc_node(name, kind);
+    if (!node) return NULL;
+    node->dev_major = major;
+    node->dev_minor = minor;
+    if (vfs_attach(parent, node) != 0) {
+        vfs_free_node(node);
+        return NULL;
+    }
+    cred_stamp_new_node(node);
+    node->mode = mode & 07777U;
+    directory_changed(parent);
+    inotify_notify(parent, TUNIX_IN_CREATE, name, 0);
+    PERSIST(created, node);
     return node;
 }
 
@@ -1086,7 +1125,7 @@ struct vfs_node *vfs_create_socket_node(const char *path, uint32_t mode) {
     if (!parent || (parent->flags & 0xFFU) != VFS_DIRECTORY) return NULL;
     if (vfs_find_child(parent, name)) return NULL;
 
-    struct vfs_node *node = vfs_alloc_node(name, VFS_SOCKET | VFS_VOLATILE);
+    struct vfs_node *node = vfs_alloc_node(name, VFS_SOCKET);
     if (!node) return NULL;
     node->mode = mode & 07777U;
     if (vfs_attach(parent, node) != 0) {
@@ -1097,6 +1136,7 @@ struct vfs_node *vfs_create_socket_node(const char *path, uint32_t mode) {
     node->mode = mode & 07777U;
     directory_changed(parent);
     inotify_notify(parent, TUNIX_IN_CREATE, name, 0);
+    PERSIST(created, node);
     return node;
 }
 
@@ -1358,8 +1398,6 @@ static void mount_identify(struct vfs_mount *entry) {
     mount_find_device(entry);
 }
 
-/* The root is mounted before /dev exists, so its device is only known once
- * devfs has made the block device nodes. */
 void vfs_mounts_find_devices(void) {
     VFS_LOCKED;
     for (struct vfs_mount *entry = mount_table; entry; entry = entry->next)
@@ -1480,10 +1518,6 @@ static int mount_is_pseudo(const char *type) {
         strcmp(type, "devtmpfs") == 0 || strcmp(type, "devfs") == 0 || strcmp(type, "eventfs") == 0;
 }
 
-/* The path a mount point goes by: its directory resolved, then its own name.
- * Resolving the whole path would look through a mount already there to the
- * path of what is mounted, which for a bind mount is its source. A final
- * symbolic link is still followed, as mount(2) and umount(2) do. */
 static int canonical_target(const char *target, char *out) {
     struct vfs_node *node = vfs_lookup_nofollow(target);
     if (!node) return -VFS_ENOENT;
@@ -1561,8 +1595,9 @@ int vfs_mount(const char *source, const char *target, const char *type, uint32_t
         int status = fatfs_mount(source, at->name, &root);
         if (status != 0) return status;
         owns_root = 1;
-    } else if (strcmp(type, "ext2") == 0 || strcmp(type, "ext3") == 0) {
-        int status = ext2fs_mount(source, at->name, &root);
+    } else if (strcmp(type, "ext2") == 0 || strcmp(type, "ext3") == 0 ||
+               strcmp(type, "ext4") == 0) {
+        int status = ext4fs_mount(source, at->name, (flags & VFS_MS_RDONLY) != 0, &root);
         if (status != 0) {
             if (root) free_tree(root);
             return status;
@@ -1582,7 +1617,7 @@ int vfs_mount(const char *source, const char *target, const char *type, uint32_t
     if (!entry) {
         if (owns_root) {
             fatfs_unmount(root);
-            ext2fs_unmount(root);
+            ext4fs_unmount(root);
             free_tree(root);
         }
         return -VFS_ENOMEM;
@@ -1637,7 +1672,7 @@ int vfs_umount(const char *target, int detach) {
     if (previous) previous->next = entry->next;
     else mount_table = entry->next;
     fatfs_unmount(entry->root);
-    ext2fs_unmount(entry->root);
+    ext4fs_unmount(entry->root);
     if (entry->owns_root && !busy) free_tree(entry->root);
     kfree(entry);
     return 0;
@@ -1718,6 +1753,9 @@ static int writeback_batch(struct vfs_node *node) {
         batch.atime = node->atime;
         batch.mtime = node->mtime;
         batch.ctime = node->ctime;
+        batch.atime_ns = node->atime_ns;
+        batch.mtime_ns = node->mtime_ns;
+        batch.ctime_ns = node->ctime_ns;
         batch.count = count;
         batch.indices = indices;
         batch.pages = pages;

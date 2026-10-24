@@ -285,6 +285,13 @@ posix-test: $(KERNEL) $(LIMINE_EXE)
 posix-test-aarch64: $(AARCH64_CORE_IMAGE)
 	ARCH=aarch64 KERNEL=$(AARCH64_CORE_IMAGE) LIMINE=$(LIMINE_DIR) testsuites/posix-tests/run.sh
 
+.PHONY: ext4-test ext4-test-aarch64
+ext4-test: $(KERNEL) $(LIMINE_EXE)
+	KERNEL=$(KERNEL) LIMINE=$(LIMINE_DIR) testsuites/ext4-tests/run.sh
+
+ext4-test-aarch64: $(AARCH64_CORE_IMAGE)
+	ARCH=aarch64 KERNEL=$(AARCH64_CORE_IMAGE) LIMINE=$(LIMINE_DIR) testsuites/ext4-tests/run.sh
+
 .PHONY: ci-boot ci-boot-aarch64
 ci-boot: $(KERNEL) $(LIMINE_EXE)
 	KERNEL=$(KERNEL) LIMINE=$(LIMINE_DIR) ci/boot.sh

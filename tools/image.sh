@@ -69,8 +69,7 @@ fi
 ROOT_MIB=$(( $(du -sm "$SYSROOT" | cut -f1) + ROOT_SLACK_MIB ))
 echo ":: building a ${ROOT_MIB} MiB root filesystem"
 truncate -s "${ROOT_MIB}M" "$WORK/root.img"
-mkfs.ext3 -q -r 1 -b 4096 -I 256 -m 1 -L tunix-root -O ^metadata_csum,^64bit,^huge_file \
-	-d "$SYSROOT" "$WORK/root.img"
+mkfs.ext4 -q -b 4096 -I 256 -m 1 -L tunix-root -d "$SYSROOT" "$WORK/root.img"
 e2fsck -fp "$WORK/root.img" >/dev/null || [ $? -lt 4 ]
 
 ESP_SECTORS=$(( ESP_MIB * 1024 * 1024 / 512 ))

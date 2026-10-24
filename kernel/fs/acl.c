@@ -52,7 +52,6 @@ static void acl_swap(struct vfs_node *node, struct vfs_acl *next) {
 
 static int may_change(const struct vfs_node *node) {
     if (node->flags & VFS_READONLY) return -EROFS;
-    if (node->disk_inode) return -EOPNOTSUPP;
     const struct credentials *cred = cred_current();
     if (cred && cred->fsuid != 0 && cred->fsuid != node->uid) return -EPERM;
     return 0;
@@ -94,15 +93,7 @@ static int entry_before(const struct acl_entry *a, const struct acl_entry *b) {
     return a->id < b->id;
 }
 
-int64_t acl_xattr_set(struct vfs_node *node, const char *name, const void *value, size_t size,
-                      int flags) {
-    if (is_default(name)) return -EOPNOTSUPP;
-    if (!is_access(name)) return -EOPNOTSUPP;
-    int allowed = may_change(node);
-    if (allowed != 0) return allowed;
-    if (flags & ~(XATTR_CREATE | XATTR_REPLACE)) return -EINVAL;
-    if ((flags & XATTR_CREATE) && acl_of(node)) return -EEXIST;
-    if ((flags & XATTR_REPLACE) && !acl_of(node)) return -ENODATA;
+static int64_t apply(struct vfs_node *node, const void *value, size_t size) {
     if (!value || size < 4U || (size - 4U) % sizeof(struct acl_entry)) return -EINVAL;
     uint32_t version;
     memcpy(&version, value, sizeof(version));
@@ -167,8 +158,28 @@ int64_t acl_xattr_set(struct vfs_node *node, const char *name, const void *value
     node->mode =
         (node->mode & ~0777U) | ((uint32_t)user_obj << 6) | (group_bits << 3) | (uint32_t)other;
     acl_swap(node, next);
-    vfs_stamp_times(node, VFS_TIME_CTIME);
     return 0;
+}
+
+int64_t acl_xattr_set(struct vfs_node *node, const char *name, const void *value, size_t size,
+                      int flags) {
+    if (is_default(name)) return -EOPNOTSUPP;
+    if (!is_access(name)) return -EOPNOTSUPP;
+    int allowed = may_change(node);
+    if (allowed != 0) return allowed;
+    if (flags & ~(XATTR_CREATE | XATTR_REPLACE)) return -EINVAL;
+    if ((flags & XATTR_CREATE) && acl_of(node)) return -EEXIST;
+    if ((flags & XATTR_REPLACE) && !acl_of(node)) return -ENODATA;
+    int64_t status = apply(node, value, size);
+    if (status != 0) return status;
+    node->xattr_dirty = 1;
+    vfs_stamp_times(node, VFS_TIME_CTIME);
+    vfs_notify_meta_changed(node);
+    return 0;
+}
+
+int acl_import(struct vfs_node *node, const void *value, size_t size) {
+    return (int)apply(node, value, size);
 }
 
 int64_t acl_xattr_remove(struct vfs_node *node, const char *name) {
@@ -177,7 +188,9 @@ int64_t acl_xattr_remove(struct vfs_node *node, const char *name) {
     int allowed = may_change(node);
     if (allowed != 0) return allowed;
     acl_swap(node, NULL);
+    node->xattr_dirty = 1;
     vfs_stamp_times(node, VFS_TIME_CTIME);
+    vfs_notify_meta_changed(node);
     return 0;
 }
 

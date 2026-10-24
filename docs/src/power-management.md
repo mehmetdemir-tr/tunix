@@ -68,7 +68,7 @@ away, so a wild syscall with plausible arguments must not be able to reach it.
 | `RB_HALT_SYSTEM` | flush, then stop |
 | `RB_ENABLE_CAD` / `RB_DISABLE_CAD` | accepted; they concern Ctrl+Alt+Del only |
 
-The flush is `ext2fs_sync` and an ATA cache flush. File writes reach ext2 as
+The flush is `ext4fs_shutdown` and an ATA cache flush. File writes reach ext4 as
 they happen, so this is metadata and the drive's own cache rather than a
 writeback cache of file contents, and it finishes in milliseconds.
 

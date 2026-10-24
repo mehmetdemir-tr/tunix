@@ -32,7 +32,8 @@
 #include <tunix/random.h>
 #include <tunix/signal.h>
 #include <tunix/syscall.h>
-#include <tunix/ext2.h>
+#include <tunix/ext4.h>
+#include <tunix/xattr.h>
 #include <tunix/time.h>
 #include <tunix/timer.h>
 #include <tunix/acl.h>
@@ -181,6 +182,7 @@ _Static_assert(offsetof(struct syscall_frame, user_rsp) == 136,
 #define SYS_DELETE_MODULE          176
 #define SYS_FINIT_MODULE           313
 #define SYS_SYNCFS                 306
+#define SYS_TRUNCATE               76
 #define SYS_FTRUNCATE              77
 #define SYS_GETCWD                 79
 #define SYS_CHDIR                  80
@@ -715,17 +717,16 @@ struct linux_statx {
 typedef char linux_statx_size_check[(sizeof(struct linux_statx) == 256) ? 1 : -1];
 
 #define STATX_BASIC_STATS     0x7FFU
+#define STATX_BTIME           0x800U
 #define STATX_MNT_ID          0x1000U
 #define STATX_MNT_ID_UNIQUE   0x4000U
 #define STATX_ATTR_MOUNT_ROOT 0x2000U
 
-/* Linux starts unique mount ids above every id it hands out the old way, so
- * that the two kinds are never confused; ours are never reused either. */
 #define STATX_MNT_ID_UNIQUE_BASE 0x80000000ULL
 
 #define AT_STATX_SYNC_TYPE 0x6000
 
-#define EXT2_SUPER_MAGIC   0xEF53U
+#define EXT4_SUPER_MAGIC   0xEF53U
 #define PROC_SUPER_MAGIC   0x9FA0U
 #define TMPFS_MAGIC        0x01021994U
 #define SYSFS_MAGIC        0x62656572U
@@ -1980,8 +1981,6 @@ static void accept_or_block(struct syscall_frame *frame, uint64_t syscall_number
 
 static uint8_t *stage_message(size_t length) { return (uint8_t *)kmalloc(length ? length : 1U); }
 
-/* A message for other sockets, a udev monitor's say, wakes whoever polls
- * them; the network lock is dropped by then. */
 static int64_t netlink_send(struct netlink_socket *socket, const void *data, size_t length,
                             int flags, const void *address, size_t address_length) {
     int64_t result = netlink_socket_sendto(socket, data, length, flags, address, address_length);
@@ -2116,8 +2115,6 @@ static int64_t sys_recvfrom(int fd, uint64_t user_data, size_t length, int flags
             netlink_socket_recvfrom(netlink, data, length, flags, user_address ? &nl_address : NULL,
                                     user_address ? &nl_length : NULL);
         if (result < 0) return result;
-        /* With MSG_TRUNC the result is the whole datagram, of which only what
-         * fits was copied. */
         size_t copied = (size_t)result < length ? (size_t)result : length;
         if (copied && copy_to_user(user_data, data, copied) != 0) return -EFAULT;
         if (user_address) {
@@ -2675,8 +2672,6 @@ static int64_t sys_setsockopt(int fd, int level, int option, uint64_t user_value
                                                  option == NETLINK_ADD_MEMBERSHIP) == 0
                 ? 0
                 : -EINVAL;
-        /* The rest change how replies and errors are framed in ways a client
-         * copes without, or only size buffers. */
         return 0;
     }
     struct inet_socket *socket = inet_socket_from_fd(fd);
@@ -2787,6 +2782,21 @@ static int64_t sys_ftruncate(int fd, uint64_t length) {
         return memfd_truncate(file->memfd, length) == 0 ? 0 : -ENOMEM;
     if (file->kind != FILE_KIND_VFS || !file->node) return -EINVAL;
     return vfs_truncate(file->node, length) == 0 ? 0 : -EIO;
+}
+
+static int64_t sys_truncate(uint64_t user_path, int64_t length) {
+    if (length < 0) return -EINVAL;
+    VFS_PATH_SCOPED path = NULL;
+    int status = copy_path_at(AT_FDCWD, user_path, &path);
+    if (status != 0) return status;
+    struct vfs_node *node = vfs_lookup(path);
+    if (!node) return lookup_errno(path, 1);
+    uint32_t kind = node->flags & 0xFFU;
+    if (kind == VFS_DIRECTORY) return -EISDIR;
+    if (kind != VFS_FILE) return -EINVAL;
+    if (node->flags & VFS_READONLY) return -EROFS;
+    if (cred_may(node, CRED_WRITE) != 0) return -EACCES;
+    return vfs_truncate(node, (uint64_t)length) == 0 ? 0 : -EIO;
 }
 
 static int64_t sys_fallocate(int fd, int mode, uint64_t offset, uint64_t length) {
@@ -2981,7 +2991,7 @@ static int64_t sys_fsync(int fd) {
     uint32_t node_type = file->node->flags & 0xFFU;
     if (node_type == VFS_FILE || node_type == VFS_DIRECTORY || node_type == VFS_BLOCKDEVICE) {
         vfs_flush_mapped(file->node);
-        if (ext2fs_owns(file->node) && vfs_fsync(file->node) != 0) return -EIO;
+        if (ext4fs_owns(file->node) && vfs_fsync(file->node) != 0) return -EIO;
         return 0;
     }
     return -EINVAL;
@@ -3096,6 +3106,14 @@ static void fill_stat(struct vfs_node *node, struct linux_stat *stat) {
     memset(stat, 0, sizeof(*stat));
     stat->st_ino = node->inode;
     stat->st_nlink = node->links ? node->links : 1;
+    if ((node->flags & 0xFFU) == VFS_DIRECTORY) {
+        vfs_lock_acquire();
+        uint64_t subdirectories = 0;
+        for (const struct vfs_node *child = node->children; child; child = child->next)
+            if (!child->link_target && (child->flags & 0xFFU) == VFS_DIRECTORY) subdirectories++;
+        vfs_lock_release();
+        stat->st_nlink = 2U + subdirectories;
+    }
     stat->st_uid = node->uid;
     stat->st_gid = node->gid;
     uint64_t size = (node->flags & VFS_UNSIZED) ? 0 : node->length;
@@ -3124,6 +3142,9 @@ static void fill_stat(struct vfs_node *node, struct linux_stat *stat) {
     stat->st_atim.tv_sec = (int64_t)node->atime;
     stat->st_mtim.tv_sec = (int64_t)node->mtime;
     stat->st_ctim.tv_sec = (int64_t)node->ctime;
+    stat->st_atim.tv_nsec = (int64_t)node->atime_ns;
+    stat->st_mtim.tv_nsec = (int64_t)node->mtime_ns;
+    stat->st_ctim.tv_nsec = (int64_t)node->ctime_ns;
 }
 
 static int64_t stat_path(int dirfd, uint64_t user_path, uint64_t user_stat, int follow) {
@@ -3186,9 +3207,15 @@ static void fill_statfs(struct vfs_node *node, struct linux_statfs *out) {
         return;
     }
 
-    struct ext2_fs_stats stats;
-    if (ext2fs_stats(node, &stats) == 0) {
-        out->f_type = EXT2_SUPER_MAGIC;
+    struct ext4_fs_stats stats;
+    if (ext4fs_stats(node, &stats) == 0) {
+        out->f_type = EXT4_SUPER_MAGIC;
+        out->f_namelen = stats.name_max;
+        if (stats.read_only) out->f_flags |= 1U;
+        uint32_t fsid[4];
+        memcpy(fsid, stats.uuid, sizeof(fsid));
+        out->f_fsid[0] = (int32_t)(fsid[0] ^ fsid[2]);
+        out->f_fsid[1] = (int32_t)(fsid[1] ^ fsid[3]);
         out->f_bsize = stats.block_size;
         out->f_frsize = stats.block_size;
         out->f_blocks = stats.blocks;
@@ -3294,6 +3321,9 @@ static void fill_statx(const struct linux_stat *basic_in, const struct vfs_node 
     out->stx_atime.tv_sec = basic.st_atim.tv_sec;
     out->stx_mtime.tv_sec = basic.st_mtim.tv_sec;
     out->stx_ctime.tv_sec = basic.st_ctim.tv_sec;
+    out->stx_atime.tv_nsec = (uint32_t)basic.st_atim.tv_nsec;
+    out->stx_mtime.tv_nsec = (uint32_t)basic.st_mtim.tv_nsec;
+    out->stx_ctime.tv_nsec = (uint32_t)basic.st_ctim.tv_nsec;
 
     out->stx_rdev_major =
         (uint32_t)(((basic.st_rdev >> 8) & 0xFFFU) | ((basic.st_rdev >> 32) & ~0xFFFU));
@@ -3303,6 +3333,11 @@ static void fill_statx(const struct linux_stat *basic_in, const struct vfs_node 
     out->stx_dev_minor = (uint32_t)((basic.st_dev & 0xFFU) | ((basic.st_dev >> 12) & ~0xFFU));
 
     if (!node) return;
+    if (node->btime) {
+        out->stx_mask |= STATX_BTIME;
+        out->stx_btime.tv_sec = node->btime;
+        out->stx_btime.tv_nsec = node->btime_ns;
+    }
     out->stx_attributes_mask = STATX_ATTR_MOUNT_ROOT;
     if (vfs_node_is_mount_root(node)) out->stx_attributes |= STATX_ATTR_MOUNT_ROOT;
     const struct vfs_mount *mount = vfs_node_mount(node);
@@ -3470,15 +3505,25 @@ static int64_t xattr_on_node(struct vfs_node *node, int op, uint64_t user_name, 
     uint8_t *buffer = size ? (uint8_t *)kmalloc(size) : NULL;
     if (size && !buffer) return -ENOMEM;
     int64_t result;
+    int posix_acl = op != XATTR_LIST && strncmp(name, "system.", 7) == 0;
     if (op == XATTR_SET) {
-        result = size && copy_from_user(buffer, user_value, size) != 0
-            ? -EFAULT
-            : acl_xattr_set(node, name, buffer, size, flags);
+        result = size && copy_from_user(buffer, user_value, size) != 0 ? -EFAULT
+            : posix_acl ? acl_xattr_set(node, name, buffer, size, flags)
+                        : vfs_xattr_set(node, name, buffer, size, flags);
     } else if (op == XATTR_REMOVE) {
-        result = acl_xattr_remove(node, name);
+        result = posix_acl ? acl_xattr_remove(node, name) : vfs_xattr_remove(node, name);
+    } else if (op == XATTR_GET) {
+        result = posix_acl ? acl_xattr_get(node, name, buffer, size)
+                           : vfs_xattr_get(node, name, buffer, size);
+        if (result > 0 && size && copy_to_user(user_value, buffer, (size_t)result) != 0)
+            result = -EFAULT;
     } else {
-        result = op == XATTR_GET ? acl_xattr_get(node, name, buffer, size)
-                                 : acl_xattr_list(node, (char *)buffer, size);
+        result = acl_xattr_list(node, (char *)buffer, size);
+        if (result >= 0) {
+            int64_t more = vfs_xattr_list(node, size ? (char *)buffer + result : NULL,
+                                          size ? size - (size_t)result : 0);
+            result = more < 0 ? more : result + more;
+        }
         if (result > 0 && size && copy_to_user(user_value, buffer, (size_t)result) != 0)
             result = -EFAULT;
     }
@@ -3699,18 +3744,30 @@ static int64_t sys_umount2(uint64_t user_target, int flags) {
 }
 
 static int64_t sys_mknodat(int dirfd, uint64_t user_path, uint32_t mode, uint64_t device) {
-    (void)device;
     VFS_PATH_SCOPED path = NULL;
     int status = copy_path_at(dirfd, user_path, &path);
     if (status != 0) return status;
 
     uint32_t type = mode & 0170000U;
-    if (type != 0010000U && type != 0100000U && type != 0) return -EPERM;
+    int special = type == 0020000U || type == 0060000U;
+    if (type != 0010000U && type != 0100000U && type != 0140000U && type != 0 && !special)
+        return -EINVAL;
+    const struct credentials *cred = cred_current();
+    if (special && cred && cred->euid != 0) return -EPERM;
     if (vfs_lookup_nofollow(path)) return -EEXIST;
     int permitted = cred_may_write_parent(path);
     if (permitted != 0) return permitted;
 
     if (type == 0010000U) return vfs_create_fifo(path, mode & 07777U) ? 0 : -EIO;
+    if (type == 0140000U) return vfs_create_socket_node(path, mode & 07777U) ? 0 : -EIO;
+    if (special) {
+        uint32_t major = (uint32_t)(((device >> 8) & 0xFFFU) | ((device >> 32) & ~0xFFFU));
+        uint32_t minor = (uint32_t)((device & 0xFFU) | ((device >> 12) & ~0xFFU));
+        return vfs_create_device(path, mode & 07777U,
+                                 type == 0020000U ? VFS_CHARDEVICE : VFS_BLOCKDEVICE, major, minor)
+            ? 0
+            : -EIO;
+    }
     return vfs_create_file_node(path, mode & 07777U) ? 0 : -EIO;
 }
 
@@ -3760,10 +3817,6 @@ static int64_t change_owner(struct vfs_node *node, uint32_t uid, uint32_t gid) {
     return 0;
 }
 
-/* An *at() call given AT_EMPTY_PATH and an empty path acts on what the
- * descriptor refers to, however it was opened, O_PATH included. Returns 1 with
- * *node set (NULL for a descriptor with no inode, such as a pipe) when the call
- * has that form, 0 when it names a path, or an error. */
 static int64_t empty_path_target(int dirfd, uint64_t user_path, int flags, struct vfs_node **node) {
     *node = NULL;
     if (!(flags & AT_EMPTY_PATH)) return 0;
@@ -3868,16 +3921,30 @@ static int64_t sys_utimens_at(int dirfd, uint64_t user_path, uint64_t user_times
     struct linux_timespec times[2];
     if (copy_from_user(times, user_times, sizeof(times)) != 0) return -EFAULT;
 
-    uint32_t now = (uint32_t)time_epoch_seconds();
+    uint64_t clock = time_realtime_ns();
+    uint32_t now = (uint32_t)(clock / 1000000000ULL);
+    uint32_t now_ns = (uint32_t)(clock % 1000000000ULL);
+    for (int index = 0; index < 2; index++) {
+        int64_t nsec = times[index].tv_nsec;
+        if (nsec == UTIME_OMIT) continue;
+        if (nsec != UTIME_NOW && (nsec < 0 || nsec > 999999999)) return -EINVAL;
+    }
     for (int index = 0; index < 2; index++) {
         int64_t nsec = times[index].tv_nsec;
         if (nsec == UTIME_OMIT) continue;
         uint32_t value = (nsec == UTIME_NOW) ? now : (uint32_t)times[index].tv_sec;
-        if (index == 0) node->atime = value;
-        else node->mtime = value;
+        uint32_t nano = (nsec == UTIME_NOW) ? now_ns : (uint32_t)nsec;
+        if (index == 0) {
+            node->atime = value;
+            node->atime_ns = nano;
+        } else {
+            node->mtime = value;
+            node->mtime_ns = nano;
+        }
     }
 
     node->ctime = now;
+    node->ctime_ns = now_ns;
     vfs_notify_meta_changed(node);
     return 0;
 }
@@ -6869,6 +6936,10 @@ static void syscall_run(struct syscall_frame *frame) {
             (uint64_t)sys_reboot((uint32_t)SYSCALL_ARG0(frame), (uint32_t)SYSCALL_ARG1(frame),
                                  (uint32_t)SYSCALL_ARG2(frame));
         break;
+    case SYS_TRUNCATE:
+        SYSCALL_RET(frame) =
+            (uint64_t)sys_truncate(SYSCALL_ARG0(frame), (int64_t)SYSCALL_ARG1(frame));
+        break;
     case SYS_FTRUNCATE:
         SYSCALL_RET(frame) = (uint64_t)sys_ftruncate((int)SYSCALL_ARG0(frame), SYSCALL_ARG1(frame));
         break;
@@ -7702,6 +7773,7 @@ static int syscall_writes_data(uint64_t number) {
 
 static int syscall_changes_files(uint64_t number) {
     switch (number) {
+    case SYS_TRUNCATE:
     case SYS_FTRUNCATE:
     case SYS_FALLOCATE:
     case SYS_RENAME:
@@ -7753,7 +7825,7 @@ void syscall_dispatch(struct syscall_frame *frame) {
     syscall_run(frame);
     syscall_release_pins_of(caller);
     if (syscall_writes_data(syscall_number) && process_current() == caller) vfs_balance_dirty();
-    if (syscall_changes_files(syscall_number) && process_current() == caller) ext2fs_balance();
+    if (syscall_changes_files(syscall_number) && process_current() == caller) ext4fs_balance();
     struct syscall_frame *resumed = frame;
     uint64_t stack_top = cpu_current()->kernel_rsp;
     if (stack_top) {

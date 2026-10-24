@@ -21,7 +21,7 @@
 #include <tunix/procfs.h>
 #include <tunix/random.h>
 #include <tunix/syscall.h>
-#include <tunix/ext2.h>
+#include <tunix/ext4.h>
 #include <tunix/time.h>
 #include <tunix/timer.h>
 #include <tunix/tty.h>
@@ -56,7 +56,7 @@ static void boot_log_stage(const char *name, uint64_t *started) {
 #define ROOT_RESCAN_NS (100ULL * 1000000ULL)
 
 static int find_root(const char *name) {
-    if (strncmp(name, "LABEL=", 6) == 0) return ext2fs_find_label(name + 6);
+    if (strncmp(name, "LABEL=", 6) == 0) return ext4fs_find_label(name + 6);
     return block_device_index_by_name(name);
 }
 
@@ -154,15 +154,14 @@ void kmain(const struct boot_info *boot) {
     block_select_root(root_index);
 
     vfs_init();
-    if (ext2fs_mount_root() != 0) {
+    if (ext4fs_mount_root(0) != 0) {
         print_block_devices();
         panic("root filesystem mount failed");
     }
     const struct block_device *root = block_root();
     char source[5 + BLOCK_NAME_BYTES] = "/dev/";
     if (root) memcpy(source + 5, root->dev_name, sizeof root->dev_name);
-    vfs_mount_builtin(root ? source : "none", "/", ext2fs_journalled(vfs_root) ? "ext3" : "ext2",
-                      vfs_root);
+    vfs_mount_builtin(root ? source : "none", "/", ext4fs_type_name(vfs_root), vfs_root);
 #if TUNIX_BOOT_TIMINGS
     boot_log_stage("root filesystem mount", &stage_started);
 #endif
@@ -196,7 +195,7 @@ void kmain(const struct boot_info *boot) {
     }
     workqueue_init();
     vfs_start_writeback();
-    ext2fs_start();
+    ext4fs_start();
     timer_init();
     arch_route_timer();
     acpi_subsystem_init();

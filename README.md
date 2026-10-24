@@ -12,6 +12,7 @@ A Unix-like kernel for x86_64 and aarch64 that runs an unmodified Void Linux use
 make        # kernel and disk image
 make run    # boot it in QEMU
 make test   # run the kernel tests
+make ext4-test  # write ext4 filesystems and check them with e2fsck
 make rust-test  # unit and differential tests of the Rust code
 ```
 
@@ -29,7 +30,7 @@ kernel/       the kernel, with its own GNUmakefile, subprojects/ and rust/
 base-files/   files added to the Void userland
 boot/         Limine boot menus for x86_64 and aarch64
 tools/        image and sysroot builders, hardware report
-testsuites/   kernel boot tests, the ACPI model test and a C++ POSIX suite
+testsuites/   kernel boot tests, the ext4 and ACPI tests and a C++ POSIX suite
 utils/        small programs for Tunix images, such as the CI boot init
 ci/           the scripts CI runs, each one runnable locally
 docs/         kernel documentation
