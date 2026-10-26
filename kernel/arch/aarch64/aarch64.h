@@ -104,6 +104,8 @@ void aarch64_build_early_tables(uint64_t load_physical, uint64_t dtb_physical);
 int aarch64_early_map(uint64_t virtual_address, uint64_t physical, uint64_t attributes, int level);
 uint64_t aarch64_early_map_device(uint64_t physical, uint64_t bytes);
 int aarch64_direct_map_wanted(uint64_t physical);
+void aarch64_enable_pan(void);
+int aarch64_privileged_access_never(void);
 
 void aarch64_start(uint64_t dtb_physical, uint64_t load_physical);
 int aarch64_el0_sync(struct syscall_frame *frame);

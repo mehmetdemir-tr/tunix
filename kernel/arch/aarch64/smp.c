@@ -96,6 +96,7 @@ void aarch64_secondary_start(uint64_t index) {
     time_mark_processor(cpu);
     process_enable_extended_fpu();
     arch_note_cpu_features();
+    aarch64_enable_pan();
     gic_init_secondary(cpu);
     arch_timer_start(TIMER_FREQUENCY_HZ);
     gic_enable_interrupt(aarch64_platform.timer_interrupt);

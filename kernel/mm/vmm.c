@@ -214,15 +214,25 @@ static uint64_t *next_table(uint64_t *table, uint16_t index, uint64_t leaf_flags
 #define CPUID_FEATURES_LEAF      1U
 #define CPUID_EDX_PAT            (1U << 16)
 #define PAT_WITH_WRITE_COMBINING 0x0007040100070406ULL
+#define CPUID_EXTENDED_LEAF      7U
+#define CPUID_EBX_SMEP           (1U << 7)
+#define CPUID_EBX_SMAP           (1U << 20)
+#define CR4_SMEP                 (1ULL << 20)
+#define CR4_SMAP                 (1ULL << 21)
 
 static int write_combining;
+static int user_access_guard;
 static void configure_page_attributes(void);
+static void guard_user_pages(void);
 
 static inline void write_msr(uint32_t msr, uint64_t value) {
     __asm__ volatile("wrmsr" : : "c"(msr), "a"((uint32_t)value), "d"((uint32_t)(value >> 32)));
 }
 
-void vmm_configure_processor(void) { configure_page_attributes(); }
+void vmm_configure_processor(void) {
+    configure_page_attributes();
+    guard_user_pages();
+}
 
 static void configure_page_attributes(void) {
     uint32_t a = 0, b = 0, c = 0, d = 0;
@@ -233,18 +243,55 @@ static void configure_page_attributes(void) {
     write_msr(IA32_PAT_MSR, PAT_WITH_WRITE_COMBINING);
     write_combining = 1;
 }
+
+static void guard_user_pages(void) {
+    uint32_t a = 0, b = 0, c = 0, d = 0;
+    __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(0U), "c"(0));
+    if (a < CPUID_EXTENDED_LEAF) return;
+    __asm__ volatile("cpuid"
+                     : "=a"(a), "=b"(b), "=c"(c), "=d"(d)
+                     : "a"(CPUID_EXTENDED_LEAF), "c"(0));
+    uint64_t wanted = 0;
+    if (b & CPUID_EBX_SMEP) wanted |= CR4_SMEP;
+    if (b & CPUID_EBX_SMAP) wanted |= CR4_SMAP;
+    if (!wanted) return;
+    if (wanted & CR4_SMAP) __asm__ volatile("clac" ::: "memory");
+    uint64_t cr4;
+    __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+    __asm__ volatile("mov %0, %%cr4" : : "r"(cr4 | wanted) : "memory");
+    user_access_guard = (int)(wanted >> 20);
+}
+
+int vmm_user_access_guard(void) { return user_access_guard; }
+
+void vmm_close_user_access(void) {
+    if (user_access_guard & 2) __asm__ volatile("clac" ::: "memory");
+}
 #else
 static int write_combining = 1;
 
 void vmm_configure_processor(void) {}
 
 static void configure_page_attributes(void) {}
+
+static void guard_user_pages(void) {}
+
+int vmm_user_access_guard(void) { return 1 | (aarch64_privileged_access_never() ? 2 : 0); }
+
+void vmm_close_user_access(void) {}
 #endif
 
 int vmm_write_combining_available(void) { return write_combining; }
 
 void vmm_init(void) {
     configure_page_attributes();
+    guard_user_pages();
+    int guard = vmm_user_access_guard();
+    if (guard)
+        kprintf("VMM: user pages guarded from the kernel (%s)\n",
+                guard == 3       ? "execute, access"
+                    : guard == 2 ? "access"
+                                 : "execute");
 
     kernel_cr3_physical = vmm_arch_read_root();
 

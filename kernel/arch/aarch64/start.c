@@ -354,6 +354,7 @@ void aarch64_start(uint64_t dtb_physical, uint64_t load_physical) {
     aarch64_platform.load_offset = load_physical - AARCH64_KERNEL_VIRTUAL_BASE;
     percpu_activate(0);
     arch_note_cpu_features();
+    aarch64_enable_pan();
 
     if (fdt_init((const void *)dtb_physical) != 0) {
         for (;;) __asm__ volatile("wfi");

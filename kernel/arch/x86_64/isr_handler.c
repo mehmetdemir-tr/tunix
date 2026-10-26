@@ -258,6 +258,7 @@ static uint64_t read_msr(uint32_t msr) {
 }
 
 void isr_handler(struct interrupt_frame *regs) {
+    vmm_close_user_access();
     if (regs->int_no == VECTOR_DOUBLE_FAULT) {
         uint64_t cr2;
         __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));

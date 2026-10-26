@@ -872,7 +872,7 @@ void syscall_init(void) {
     wrmsr(0xC0000080, efer);
     wrmsr(0xC0000081, ((uint64_t)0x10 << 48) | ((uint64_t)0x08 << 32));
     wrmsr(0xC0000082, (uint64_t)syscall_entry);
-    wrmsr(0xC0000084, 0x200ULL | 0x400ULL);
+    wrmsr(0xC0000084, 0x200ULL | 0x400ULL | 0x40000ULL);
 }
 
 #else

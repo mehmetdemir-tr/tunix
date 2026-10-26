@@ -175,6 +175,7 @@ static inline void vmm_arch_invalidate(uint64_t address) {
 }
 
 int aarch64_direct_map_wanted(uint64_t physical);
+int aarch64_privileged_access_never(void);
 
 static inline int vmm_arch_direct_map_wanted(uint64_t physical) {
     return aarch64_direct_map_wanted(physical);

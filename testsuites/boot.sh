@@ -30,13 +30,13 @@ tunix_boot() {
 	_wait=${3:-120}
 	_cpus=${CPUS:-2}
 	if [ "$arch" = aarch64 ]; then
-		timeout "$_wait" qemu-system-aarch64 -M virt,gic-version=3 -cpu cortex-a72 \
-			-smp "$_cpus" -m 1G -kernel "$kernel" -append root=LABEL=tunix-root \
+		timeout "$_wait" qemu-system-aarch64 -M virt,gic-version=3 -cpu "${AARCH64_CPU:-cortex-a72}" \
+			-smp "$_cpus" -m "${MEMORY:-1G}" -kernel "$kernel" -append root=LABEL=tunix-root \
 			-drive "format=raw,file=$1,if=none,id=disk0" -device nvme,drive=disk0,serial=tunix \
 			-display none -no-reboot -serial "file:$2" >/dev/null 2>&1 || true
 	else
 		timeout "$_wait" qemu-system-x86_64 -machine q35,accel=kvm:tcg -cpu max \
-			-smp "$_cpus" -m 1G -drive "format=raw,file=$1,if=none,id=disk0" \
+			-smp "$_cpus" -m "${MEMORY:-1G}" -drive "format=raw,file=$1,if=none,id=disk0" \
 			-device ide-hd,drive=disk0,bus=ide.0 -display none -no-reboot \
 			-serial "file:$2" >/dev/null 2>&1 || true
 	fi

@@ -44,6 +44,8 @@ void vmm_init(void);
 int vmm_write_combining_available(void);
 
 void vmm_configure_processor(void);
+int vmm_user_access_guard(void);
+void vmm_close_user_access(void);
 
 void *vmm_phys_to_virt(uint64_t physical);
 uint64_t vmm_virt_to_phys_direct(const void *virtual_address);

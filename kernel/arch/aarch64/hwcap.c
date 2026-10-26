@@ -63,6 +63,22 @@ void arch_note_cpu_features(void) {
                                         __ATOMIC_RELAXED)) {}
 }
 
+static int pan_enabled;
+
+void aarch64_enable_pan(void) {
+    uint64_t mmfr1;
+    __asm__ volatile("mrs %0, id_aa64mmfr1_el1" : "=r"(mmfr1));
+    if (!field(mmfr1, 20)) return;
+    uint64_t sctlr;
+    __asm__ volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
+    sctlr &= ~(1ULL << 23);
+    __asm__ volatile("msr sctlr_el1, %0; isb" : : "r"(sctlr) : "memory");
+    __asm__ volatile(".inst 0xd500419f; isb" ::: "memory");
+    pan_enabled = 1;
+}
+
+int aarch64_privileged_access_never(void) { return pan_enabled; }
+
 uint64_t arch_elf_hwcap(void) {
     uint64_t hwcap = __atomic_load_n(&shared_hwcap, __ATOMIC_RELAXED);
     return hwcap == ~0ULL ? current_hwcap() : hwcap;
