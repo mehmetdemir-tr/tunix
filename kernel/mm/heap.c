@@ -299,6 +299,11 @@ void kfree(void *ptr) {
 
     if (block->is_free) {
         lock_release(&heap_lock);
+        static unsigned reported;
+        if (reported < 8U) {
+            reported++;
+            kprintf("HEAP: double kfree of %p from %p\n", ptr, __builtin_return_address(0));
+        }
         return;
     }
     heap_allocated -= block->size;
