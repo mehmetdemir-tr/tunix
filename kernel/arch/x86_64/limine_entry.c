@@ -73,6 +73,7 @@ extern uint8_t kernel_image_start[];
 extern uint8_t kernel_reserve_end[];
 
 extern void kmain(const struct boot_info *boot);
+extern void stack_guard_init(void);
 extern void panic(const char *message);
 
 static struct boot_memory_region memory_regions[BOOT_MEMORY_REGIONS];
@@ -126,7 +127,8 @@ static void build_framebuffer_info(uint64_t hhdm_offset) {
 
 const struct boot_info *boot_info(void) { return &info; }
 
-void limine_start(void) {
+__attribute__((no_stack_protector)) void limine_start(void) {
+    stack_guard_init();
     if (!LIMINE_BASE_REVISION_SUPPORTED) panic("limine: base revision 3 unsupported");
     if (!hhdm_request.response) panic("limine: no higher-half direct map");
     if (paging_mode_request.response &&

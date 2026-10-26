@@ -17,11 +17,15 @@
 
 extern void kprintf(const char *fmt, ...);
 extern void panic(const char *message);
+extern uint64_t __stack_chk_guard;
+extern void __stack_chk_fail(void);
 
 #define EXPORT(symbol) {#symbol, (uint64_t)(uintptr_t)&symbol}
 
 const struct module_export kernel_symbols[] = {
     EXPORT(kprintf),
+    EXPORT(__stack_chk_guard),
+    EXPORT(__stack_chk_fail),
     EXPORT(panic),
     EXPORT(kmalloc),
     EXPORT(kfree),

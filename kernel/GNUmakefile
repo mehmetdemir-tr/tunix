@@ -18,7 +18,7 @@ include subprojects/uacpi/RECIPE
 include subprojects/rust/RECIPE
 
 KERNEL_CFLAGS := -std=gnu11 -Wall -Wextra -Werror -ffreestanding \
-	-fno-stack-protector -fno-pic -fno-pie -fno-builtin \
+	-fstack-protector-strong -mstack-protector-guard=global -fno-pic -fno-pie -fno-builtin \
 	-fno-asynchronous-unwind-tables -fno-unwind-tables -mno-red-zone -m64 \
 	-Os -ffunction-sections -fdata-sections -mcmodel=kernel -mgeneral-regs-only \
 	-Iinclude -I$(LIMINE_DIR) -I$(UACPI_DIR)/include \
@@ -106,7 +106,7 @@ AARCH64_NM      ?= aarch64-linux-gnu-nm
 
 AARCH64_CORE_BUILD := $(BUILD)/aarch64-core
 AARCH64_CORE_CFLAGS := -std=gnu11 -Wall -Wextra -Werror -ffreestanding \
-	-fno-stack-protector -fno-pic -fno-pie -fno-builtin \
+	-fstack-protector-strong -mstack-protector-guard=global -fno-pic -fno-pie -fno-builtin \
 	-fno-asynchronous-unwind-tables -fno-unwind-tables -mgeneral-regs-only \
 	-mstrict-align -march=armv8-a -mno-outline-atomics -Os \
 	-ffunction-sections -fdata-sections \

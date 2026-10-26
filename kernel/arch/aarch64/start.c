@@ -22,6 +22,7 @@
 extern char kernel_image_start[];
 extern char __image_end[];
 extern void kmain(const struct boot_info *boot);
+extern void stack_guard_init(void);
 extern void kprintf(const char *fmt, ...);
 
 struct aarch64_platform aarch64_platform;
@@ -350,7 +351,9 @@ static void map_direct_memory(void) {
     }
 }
 
-void aarch64_start(uint64_t dtb_physical, uint64_t load_physical) {
+__attribute__((no_stack_protector)) void aarch64_start(uint64_t dtb_physical,
+                                                       uint64_t load_physical) {
+    stack_guard_init();
     aarch64_platform.load_offset = load_physical - AARCH64_KERNEL_VIRTUAL_BASE;
     percpu_activate(0);
     arch_note_cpu_features();
