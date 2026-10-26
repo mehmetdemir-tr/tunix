@@ -2352,7 +2352,6 @@ static int commit_file(struct vm_area *area, uint64_t page) {
     vfs_prefetch(node, window * 4096ULL, VFS_READAHEAD_PAGES * 4096ULL);
     uint64_t physical = vfs_page_physical(node, index) & ~0xFFFULL;
     if (!physical) return 0;
-    if (pmm_page_refcount(physical) == 0 && pmm_page_ref(physical) != 0) return 0;
     return map_shared_page(page, physical, shared_page_flags(area));
 }
 
@@ -3046,6 +3045,9 @@ int64_t process_clone_thread_from_syscall(struct syscall_frame *frame, uint64_t 
 
 static uint64_t futex_shared_key(uint64_t address) {
     if (!current || !current->cr3) return 0;
+    MEMORY_LOCKED;
+    uint32_t probe;
+    if (copy_from_user(&probe, address, sizeof(probe)) != 0) return 0;
     uint64_t physical = 0, flags = 0;
     if (vmm_translate(current->cr3, address, &physical, &flags) != 0) return 0;
     if (!(flags & PAGE_SHARED)) return 0;
@@ -3087,8 +3089,10 @@ int64_t process_futex_wait(struct syscall_frame *frame, uint64_t address, uint32
     return 0;
 }
 
-static volatile uint32_t *user_futex_word(uint64_t address) {
+static volatile uint32_t *user_futex_word(uint64_t address, uint64_t *pinned) {
+    *pinned = 0;
     if (!current || (address & 3U) || address >= USER_ADDRESS_LIMIT) return NULL;
+    MEMORY_LOCKED;
     uint32_t probe;
     if (copy_from_user(&probe, address, sizeof(probe)) != 0) return NULL;
     uint64_t physical = 0, flags = 0;
@@ -3098,15 +3102,26 @@ static volatile uint32_t *user_futex_word(uint64_t address) {
         if (vmm_translate(current->cr3, address, &physical, &flags) != 0 || !(flags & PAGE_WRITE))
             return NULL;
     }
+    if (flags & PAGE_DEVICE) return NULL;
+    if (pmm_page_ref(physical & ~0xFFFULL) != 0) return NULL;
+    *pinned = physical & ~0xFFFULL;
     return (volatile uint32_t *)vmm_phys_to_virt(physical);
 }
 
+static void futex_word_unpin(uint64_t *pinned) {
+    if (*pinned) pmm_free_page((void *)*pinned);
+    *pinned = 0;
+}
+
+#define FUTEX_WORD_PIN __attribute__((cleanup(futex_word_unpin))) uint64_t
+
 static int pi_sleep(struct syscall_frame *frame, uint64_t address, uint32_t expected,
-                    volatile uint32_t *word, int64_t timeout_ns, int shared,
+                    volatile uint32_t *word, uint64_t *pinned, int64_t timeout_ns, int shared,
                     uint64_t syscall_number) {
     uint64_t key = shared ? futex_shared_key(address) : 0;
     SCHED_LOCKED;
     if (__atomic_load_n(word, __ATOMIC_ACQUIRE) != expected) return 0;
+    futex_word_unpin(pinned);
     struct process *waiting = current;
     SYSCALL_RESTART(frame, syscall_number);
     waiting->syscall_rewound = 1;
@@ -3130,7 +3145,8 @@ static int pi_sleep(struct syscall_frame *frame, uint64_t address, uint32_t expe
 
 int64_t process_futex_lock_pi(struct syscall_frame *frame, uint64_t address, int64_t deadline_ns,
                               int trylock, int shared, uint64_t syscall_number) {
-    volatile uint32_t *word = user_futex_word(address);
+    FUTEX_WORD_PIN pinned;
+    volatile uint32_t *word = user_futex_word(address, &pinned);
     if (!word) return -EFAULT;
     uint32_t tid = (uint32_t)current->pid;
     for (;;) {
@@ -3175,13 +3191,14 @@ int64_t process_futex_lock_pi(struct syscall_frame *frame, uint64_t address, int
             }
             timeout_ns = (int64_t)((uint64_t)deadline_ns - now);
         }
-        if (pi_sleep(frame, address, value, word, timeout_ns, shared, syscall_number))
+        if (pi_sleep(frame, address, value, word, &pinned, timeout_ns, shared, syscall_number))
             return PROCESS_RESTARTED;
     }
 }
 
 int64_t process_futex_unlock_pi(uint64_t address, int shared) {
-    volatile uint32_t *word = user_futex_word(address);
+    FUTEX_WORD_PIN pinned;
+    volatile uint32_t *word = user_futex_word(address, &pinned);
     if (!word) return -EFAULT;
     uint32_t value = __atomic_load_n(word, __ATOMIC_ACQUIRE);
     if ((value & FUTEX_TID_MASK) != (uint32_t)current->pid) return -EPERM;
@@ -3211,7 +3228,8 @@ int64_t process_futex_wake_op(uint64_t address, int wake, uint64_t second, int w
     int32_t cmparg = (int32_t)(encoded & 0xFFFU);
     if (encoded & 0x80000000U) oparg = 1U << (oparg & 31U);
     if (cmp > 5U || op > 4U) return -EINVAL;
-    volatile uint32_t *word = user_futex_word(second);
+    FUTEX_WORD_PIN pinned;
+    volatile uint32_t *word = user_futex_word(second, &pinned);
     if (!word) return -EFAULT;
     uint32_t old = __atomic_load_n(word, __ATOMIC_ACQUIRE);
     for (;;) {
