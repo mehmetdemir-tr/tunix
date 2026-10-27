@@ -17,8 +17,7 @@
 #include <uacpi/kernel_api.h>
 
 #include "priv.h"
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define PAGE_BYTES    4096ULL
 #define MAPPINGS      128U

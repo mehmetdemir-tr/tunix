@@ -5,8 +5,7 @@
 #include <tunix/lock.h>
 #include <tunix/process.h>
 #include <tunix/workqueue.h>
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 static struct lock queue_lock = LOCK_INITIALIZER("work queue", LOCK_RANK_LEAF);
 static struct work *head;

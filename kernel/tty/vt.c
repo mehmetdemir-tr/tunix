@@ -17,15 +17,8 @@
 #include <tunix/vt.h>
 #include <tunix/devnum.h>
 #include <uapi/input_event.h>
-
-#define EPERM  1
-#define ENXIO  6
-#define EAGAIN 11
-#define EFAULT 14
-#define EBUSY  16
-#define EINVAL 22
-#define ENOTTY 25
-#define ENOMEM 12
+#include <tunix/kprintf.h>
+#include <tunix/errno.h>
 
 struct linux_winsize {
     uint16_t rows;
@@ -54,8 +47,6 @@ static unsigned display_owner_index;
 static int display_suspended;
 static char switch_channel;
 static char input_channel;
-
-extern void kprintf(const char *fmt, ...);
 
 static int index_valid(unsigned index) { return index >= 1U && index <= VT_COUNT; }
 

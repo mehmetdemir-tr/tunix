@@ -7,15 +7,9 @@
 #include <tunix/lock.h>
 #include <tunix/process.h>
 #include <tunix/vfs.h>
+#include <tunix/errno.h>
 
-#define EPERM     1
-#define ENOENT    2
-#define ESRCH     3
-#define ENOMEM    12
-#define EBUSY     16
-#define EINVAL    22
-#define ENOTEMPTY 39
-#define SIGKILL   9
+#define SIGKILL 9
 
 enum {
     FILE_PROCS,

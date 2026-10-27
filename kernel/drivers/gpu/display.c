@@ -3,8 +3,7 @@
 #include <tunix/boot_framebuffer.h>
 #include <tunix/display.h>
 #include <tunix/nv50.h>
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 static const struct display_early_driver *const early_drivers[] = {
 #if defined(__x86_64__)

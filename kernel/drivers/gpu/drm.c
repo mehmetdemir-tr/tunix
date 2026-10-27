@@ -20,6 +20,8 @@
 #include <tunix/lock.h>
 #include <tunix/mutex.h>
 #include <tunix/smp.h>
+#include <tunix/kprintf.h>
+#include <tunix/errno.h>
 
 static struct mutex drm_lock = MUTEX_INITIALIZER("drm", LOCK_RANK_CHAR);
 
@@ -30,24 +32,6 @@ static void drm_guard_release(int *unused) {
 
 #define DRM_LOCKED \
     __attribute__((cleanup(drm_guard_release))) int drm_guard = (mutex_lock(&drm_lock), 0)
-
-extern void kprintf(const char *fmt, ...);
-
-#define EINVAL     22
-#define ENOENT     2
-#define ENOMEM     12
-#define ENOTTY     25
-#define EFAULT     14
-#define EPERM      1
-#define EAGAIN     11
-#define ENXIO      6
-#define EBADF      9
-#define EMFILE     24
-#define EIO        5
-#define EBUSY      16
-#define EACCES     13
-#define ENODEV     19
-#define EOPNOTSUPP 95
 
 #define DRM_CLOEXEC 02000000
 

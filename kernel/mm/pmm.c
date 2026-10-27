@@ -8,8 +8,7 @@ static void *pmm_alloc_page_locked(void);
 static void pmm_free_page_locked(void *physical_address);
 #include <tunix/pmm.h>
 #include <tunix/vmm.h>
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #if TUNIX_DEBUG_LOGS
 #define KDEBUG(...) kprintf(__VA_ARGS__)
@@ -18,7 +17,6 @@ extern void kprintf(const char *fmt, ...);
     do { \
     } while (0)
 #endif
-extern void panic(const char *msg);
 
 static uint8_t *bitmap;
 static uint32_t *refcounts;

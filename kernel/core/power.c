@@ -11,8 +11,7 @@
 #include <tunix/platform.h>
 #include <tunix/power.h>
 #include <tunix/workqueue.h>
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 static void flush_disks(void) {
     (void)vfs_sync();

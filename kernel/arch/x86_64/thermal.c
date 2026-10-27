@@ -8,8 +8,7 @@
 #include <tunix/thermal.h>
 #include <tunix/time.h>
 #include <tunix/workqueue.h>
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define MSR_CLOCK_MODULATION   0x19AU
 #define MSR_THERM_STATUS       0x19CU

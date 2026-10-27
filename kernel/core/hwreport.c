@@ -21,8 +21,7 @@
 #include <tunix/thermal.h>
 #include <tunix/time.h>
 #include <tunix/vfs.h>
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define REPORT_PATH "/tunix-hwreport.txt"
 #define KMSG_PATH   "/tunix-kmsg.txt"

@@ -12,8 +12,7 @@
 #include <uacpi/uacpi.h>
 
 #include "priv.h"
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define ZONES_MAX            8U
 #define POLL_NS              5000000000ULL

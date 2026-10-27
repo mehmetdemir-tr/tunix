@@ -13,8 +13,7 @@
 #include <tunix/partition.h>
 #include <tunix/time.h>
 #include <tunix/usb_storage.h>
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 static struct block_device **devices;
 static int device_capacity;

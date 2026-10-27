@@ -10,9 +10,7 @@ static int64_t pipe_write_locked(struct pipe_buffer *pipe, size_t size, const vo
 static int pipe_resize_locked(struct pipe_buffer *pipe, size_t capacity);
 #include <tunix/pipe.h>
 #include <tunix/process.h>
-
-#define EAGAIN 11
-#define EINTR  4
+#include <tunix/errno.h>
 
 int pipe_buffer_init(struct pipe_buffer *pipe, size_t capacity) {
     memset(pipe, 0, sizeof(*pipe));

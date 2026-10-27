@@ -5,14 +5,7 @@
 #include <tunix/defer.h>
 #include <tunix/kstring.h>
 #include <tunix/vfs.h>
-
-#define EPERM      1
-#define EEXIST     17
-#define EINVAL     22
-#define EROFS      30
-#define ERANGE     34
-#define ENODATA    61
-#define EOPNOTSUPP 95
+#include <tunix/errno.h>
 
 #define ACL_VERSION     2U
 #define ACL_USER_OBJ    0x01U

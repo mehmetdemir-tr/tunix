@@ -10,6 +10,7 @@
 #include <tunix/vmm.h>
 #include <tunix/hwcap.h>
 #include "aarch64.h"
+#include <tunix/kprintf.h>
 
 #define DESC_SH_INNER      (3ULL << 8)
 #define DESC_AF            (1ULL << 10)
@@ -23,7 +24,6 @@ extern char kernel_image_start[];
 extern char __image_end[];
 extern void kmain(const struct boot_info *boot);
 extern void stack_guard_init(void);
-extern void kprintf(const char *fmt, ...);
 
 struct aarch64_platform aarch64_platform;
 

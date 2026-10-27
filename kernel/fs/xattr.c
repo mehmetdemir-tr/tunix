@@ -5,17 +5,7 @@
 #include <tunix/kstring.h>
 #include <tunix/vfs.h>
 #include <tunix/xattr.h>
-
-#define EPERM      1
-#define ENOMEM     12
-#define EACCES     13
-#define EEXIST     17
-#define EINVAL     22
-#define ENOSPC     28
-#define EROFS      30
-#define ERANGE     34
-#define ENODATA    61
-#define EOPNOTSUPP 95
+#include <tunix/errno.h>
 
 #define XATTR_CREATE  1
 #define XATTR_REPLACE 2

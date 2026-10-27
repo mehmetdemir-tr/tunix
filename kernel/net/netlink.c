@@ -6,12 +6,7 @@
 #include <tunix/net/netlink.h>
 #include <tunix/net/net.h>
 #include <tunix/process.h>
-
-#define EAGAIN     11
-#define ENOENT     2
-#define EINVAL     22
-#define EOPNOTSUPP 95
-#define ENODEV     19
+#include <tunix/errno.h>
 
 #define NL_MSG_PEEK  0x2
 #define NL_MSG_TRUNC 0x20
@@ -677,8 +672,6 @@ static void uevent_broadcast_locked(const void *message, size_t length) {
 
 void netlink_uevent_broadcast(const void *message, size_t length) {
     uevent_broadcast_locked(message, length);
-    /* Listeners sleep in poll and epoll on the shared I/O channel, woken once
-     * the network lock is no longer held. */
     (void)process_wake_io();
 }
 

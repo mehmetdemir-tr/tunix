@@ -6,6 +6,7 @@
 #include <tunix/vmm.h>
 
 #include "priv.h"
+#include <tunix/kprintf.h>
 
 #define PDISP_OBJECTS    0x610010U
 #define PDISP_INTR_0     0x610020U
@@ -77,8 +78,6 @@
 #define VPLL_FRACTION     0x614108U
 #define HEAD_RG_CLOCK     0x614200U
 #define SOR_CLOCK         0x614300U
-
-extern void kprintf(const char *fmt, ...);
 
 struct method_mirror {
     uint16_t method;

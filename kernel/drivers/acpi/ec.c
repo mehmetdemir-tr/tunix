@@ -13,8 +13,7 @@
 #include <uacpi/utilities.h>
 
 #include "priv.h"
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define EC_OUTPUT_FULL  0x01U
 #define EC_INPUT_FULL   0x02U

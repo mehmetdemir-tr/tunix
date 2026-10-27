@@ -10,21 +10,8 @@
 #include <tunix/syscall.h>
 #include <tunix/spinlock.h>
 #include <tunix/unix_socket.h>
+#include <tunix/errno.h>
 
-#define EADDRINUSE   98
-#define EAFNOSUPPORT 97
-#define EAGAIN       11
-#define EALREADY     114
-#define ECONNREFUSED 111
-#define EINVAL       22
-#define ENAMETOOLONG 36
-#define ENOTCONN     107
-#define EPIPE        32
-
-#define EMSGSIZE             90
-#define ENOBUFS              105
-#define EISCONN              106
-#define EOPNOTSUPP           95
 #define UNIX_DGRAM_BYTES_MAX (256U * 1024U)
 #define UNIX_DGRAM_COUNT_MAX 512
 

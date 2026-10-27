@@ -9,8 +9,7 @@
 #include <uacpi/utilities.h>
 
 #include "priv.h"
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define PROCESSORS_MAX            64U
 #define PDC_REVISION              1U

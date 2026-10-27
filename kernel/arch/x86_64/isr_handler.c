@@ -15,9 +15,7 @@
 #include <tunix/signal.h>
 #include <tunix/smp.h>
 #include <tunix/timer.h>
-
-extern void kprintf(const char *fmt, ...);
-extern void panic(const char *msg);
+#include <tunix/kprintf.h>
 
 #define VERBOSE_FAULT_LIMIT 24U
 

@@ -2,9 +2,7 @@
 #include <tunix/cpu.h>
 #include <tunix/percpu.h>
 #include <tunix/time.h>
-
-extern void panic(const char *message) __attribute__((noreturn));
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 static uint64_t boot_tsc;
 static uint64_t tsc_hz;

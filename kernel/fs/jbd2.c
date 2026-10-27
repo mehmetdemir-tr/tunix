@@ -5,8 +5,7 @@
 #include <tunix/jbd2.h>
 #include <tunix/kstring.h>
 #include <tunix/time.h>
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define JBD2_MAGIC 0xC03B3998U
 

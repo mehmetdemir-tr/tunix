@@ -10,9 +10,7 @@
 #include <tunix/timer.h>
 #include "aarch64.h"
 #include <tunix/module.h>
-
-extern void kprintf(const char *fmt, ...);
-extern void panic(const char *message) __attribute__((noreturn));
+#include <tunix/kprintf.h>
 
 #define EC_UNKNOWN      0x00U
 #define EC_SVC64        0x15U

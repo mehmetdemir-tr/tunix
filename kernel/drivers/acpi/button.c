@@ -8,8 +8,7 @@
 #include <uacpi/utilities.h>
 
 #include "priv.h"
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define NOTIFY_STATUS_CHANGE 0x80U
 

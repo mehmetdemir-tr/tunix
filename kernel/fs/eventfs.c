@@ -7,9 +7,7 @@
 #include <tunix/kstring.h>
 #include <tunix/process.h>
 #include <tunix/vfs.h>
-
-#define EAGAIN   11
-#define EMSGSIZE 90
+#include <tunix/errno.h>
 
 struct eventfs_subscriber {
     struct eventfs_subscriber *next;

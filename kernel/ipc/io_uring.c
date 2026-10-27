@@ -8,15 +8,7 @@
 #include <tunix/time.h>
 #include <tunix/usercopy.h>
 #include <tunix/vmm.h>
-
-#define ENOENT    2
-#define EBADF     9
-#define ENOMEM    12
-#define EFAULT    14
-#define EBUSY     16
-#define EINVAL    22
-#define ETIME     62
-#define ECANCELED 125
+#include <tunix/errno.h>
 
 #define RING_PAGE           4096ULL
 #define RING_MAX_ENTRIES    32768U

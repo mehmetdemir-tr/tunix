@@ -15,8 +15,7 @@
 #include <tunix/mutex.h>
 #include <tunix/time.h>
 #include <tunix/workqueue.h>
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define CBW_SIGNATURE 0x43425355U
 #define CSW_SIGNATURE 0x53425355U

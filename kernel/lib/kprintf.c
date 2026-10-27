@@ -3,6 +3,7 @@
 #include <stdarg.h>
 #include <tunix/cpu.h>
 #include <tunix/klog.h>
+#include <tunix/kprintf.h>
 #include <tunix/smp.h>
 #include <tunix/kstring.h>
 

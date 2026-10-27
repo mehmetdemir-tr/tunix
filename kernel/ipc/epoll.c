@@ -6,6 +6,7 @@
 #include <tunix/kstring.h>
 #include <tunix/lock.h>
 #include <tunix/syscall.h>
+#include <tunix/errno.h>
 
 static struct lock epoll_lock = LOCK_INITIALIZER("epoll", LOCK_RANK_OBJECT);
 
@@ -17,10 +18,6 @@ static void epoll_guard_release(int *unused) {
 #define EPOLL_LOCKED \
     __attribute__((cleanup(epoll_guard_release))) int epoll_guard = (lock_acquire(&epoll_lock), 0)
 
-#define EEXIST        17
-#define EINVAL        22
-#define ENOENT        2
-#define ENOSPC        28
 #define EPOLLONESHOT  (1U << 30)
 #define EPOLLET       (1U << 31)
 #define EPOLLERR      0x008U

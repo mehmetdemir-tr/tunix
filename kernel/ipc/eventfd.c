@@ -3,6 +3,7 @@
 #include <tunix/eventfd.h>
 #include <tunix/heap.h>
 #include <tunix/lock.h>
+#include <tunix/errno.h>
 
 static struct lock eventfd_lock = LOCK_INITIALIZER("eventfd", LOCK_RANK_OBJECT);
 
@@ -14,9 +15,6 @@ static void eventfd_guard_release(int *unused) {
 #define EVENTFD_LOCKED \
     __attribute__((cleanup(eventfd_guard_release))) int eventfd_guard = \
         (lock_acquire(&eventfd_lock), 0)
-
-#define EAGAIN 11
-#define EINVAL 22
 
 struct eventfd_context {
     uint64_t counter;

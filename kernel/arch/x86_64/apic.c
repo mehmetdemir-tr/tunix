@@ -10,8 +10,7 @@
 #include <tunix/time.h>
 #include <tunix/timer.h>
 #include <tunix/vmm.h>
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define APIC_WINDOW_OFFSET    0x00400000ULL
 #define IO_APIC_WINDOW_OFFSET 0x00401000ULL

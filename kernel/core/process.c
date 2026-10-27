@@ -36,18 +36,10 @@ static int next_pending_signal(struct process *process);
 #include <tunix/vt.h>
 #include <tunix/vfs.h>
 #include <tunix/vmm.h>
+#include <tunix/kprintf.h>
+#include <tunix/errno.h>
 
 #define KERNEL_STACK_SIZE             (32 * 1024)
-#define ECHILD                        10
-#define EINTR                         4
-#define EINVAL                        22
-#define ESRCH                         3
-#define EDEADLK                       35
-#define EPERM                         1
-#define EACCES                        13
-#define EAGAIN                        11
-#define EFAULT                        14
-#define ETIMEDOUT                     110
 #define SIGSEGV                       11
 #define FUTEX_OWNER_DIED              0x40000000U
 #define FUTEX_TID_MASK                0x3fffffffU
@@ -81,8 +73,6 @@ extern void process_enter_user(uint64_t entry, uint64_t user_stack, uint64_t cr3
     __attribute__((noreturn));
 extern void cpu_enter_idle(uint64_t idle_stack_top) __attribute__((noreturn));
 extern void cpu_idle_park(uint64_t idle_stack_top) __attribute__((noreturn));
-extern void kprintf(const char *fmt, ...);
-extern void panic(const char *msg) __attribute__((noreturn));
 
 #if TUNIX_DEBUG_LOGS
 #define KDEBUG(...) kprintf(__VA_ARGS__)

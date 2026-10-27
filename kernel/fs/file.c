@@ -29,13 +29,9 @@ extern int process_pidfd_exited(uint64_t pid, uint64_t start_ns);
 #include <tunix/unix_socket.h>
 #include <tunix/net/inet_socket.h>
 #include <tunix/net/netlink.h>
-
-#define EAGAIN 11
-#define EBADF  9
-#define EINVAL 22
+#include <tunix/errno.h>
 
 #define EWOULDBLOCK EAGAIN
-#define EPIPE       32
 #define O_APPEND    02000
 
 struct file *file_open_node(struct vfs_node *node, uint32_t flags) {

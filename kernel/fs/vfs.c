@@ -18,8 +18,7 @@
 #include <tunix/process.h>
 #include <tunix/vfs.h>
 #include <tunix/xattr.h>
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define VFS_SYMLINK_MAX_DEPTH 40
 #define VFS_MOUNT_MAX_DEPTH   16

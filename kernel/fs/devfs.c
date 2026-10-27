@@ -18,12 +18,8 @@
 #include <tunix/vfs.h>
 #include <tunix/vt.h>
 #include <uapi/input_event.h>
+#include <tunix/errno.h>
 
-#define EFAULT      14
-#define EINVAL      22
-#define ENOSPC      28
-#define EIO         5
-#define EAGAIN      11
 #define RTC_RD_TIME 0x80247009UL
 
 struct linux_rtc_time {

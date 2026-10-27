@@ -11,8 +11,8 @@
 #include <tunix/vmm_arch.h>
 #include <tunix/hwcap.h>
 #include "aarch64.h"
+#include <tunix/kprintf.h>
 
-extern void kprintf(const char *fmt, ...);
 extern char secondary_entry[];
 
 #define PSCI_CPU_ON         0xC4000003ULL

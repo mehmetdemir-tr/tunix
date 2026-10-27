@@ -11,16 +11,7 @@
 #include <tunix/tty.h>
 #include <tunix/usercopy.h>
 #include <tunix/vfs.h>
-
-#define EPERM  1
-#define EINTR  4
-#define EAGAIN 11
-#define EFAULT 14
-#define EINVAL 22
-#define EIO    5
-#define ENOENT 2
-#define ENOTTY 25
-#define ENXIO  6
+#include <tunix/errno.h>
 
 #define TIOCSCTTY  0x540EUL
 #define TIOCGPTN   0x80045430UL

@@ -4,8 +4,7 @@
 #include <tunix/boot_framebuffer.h>
 #include <tunix/vmm.h>
 #include "aarch64.h"
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define FW_CFG_DATA        0x00U
 #define FW_CFG_SELECTOR    0x08U

@@ -2,6 +2,7 @@
 #include <tunix/vmm.h>
 #include <tunix/pmm.h>
 #include <tunix/lock.h>
+#include <tunix/kprintf.h>
 
 #define HEAP_START        HEAP_VIRTUAL_BASE
 #define HEAP_INITIAL_SIZE (1024 * 1024)
@@ -49,9 +50,6 @@ static uint64_t bin_mask;
 static uint64_t heap_size = 0;
 static uint64_t heap_allocated = 0;
 static struct lock heap_lock = LOCK_INITIALIZER("heap", LOCK_RANK_HEAP);
-
-extern void kprintf(const char *fmt, ...);
-extern void panic(const char *msg);
 
 static unsigned bin_of(uint64_t size) { return size ? 63U - (unsigned)__builtin_clzll(size) : 0U; }
 

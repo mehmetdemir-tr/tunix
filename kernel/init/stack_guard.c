@@ -2,8 +2,7 @@
 #include <stdint.h>
 #include <tunix/cpu.h>
 #include <tunix/random.h>
-
-extern void panic(const char *msg) __attribute__((noreturn));
+#include <tunix/kprintf.h>
 
 uint64_t __stack_chk_guard = 0x5D1C7A3E9B20F600ULL;
 

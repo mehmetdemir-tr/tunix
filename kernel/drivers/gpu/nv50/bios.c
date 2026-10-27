@@ -5,6 +5,7 @@
 #include <tunix/time.h>
 
 #include "priv.h"
+#include <tunix/kprintf.h>
 
 #define DCB_POINTER        0x36U
 #define DCB_SIGNATURE      0x4EDCBDCBU
@@ -17,8 +18,6 @@
 #define OP_TIME            0x74U
 #define SCRIPT_MAX_STEPS   512U
 #define SCRIPT_MAX_DEPTH   8U
-
-extern void kprintf(const char *fmt, ...);
 
 static uint8_t bios8(const struct nv50_device *gpu, uint32_t at) {
     return at < gpu->vbios_bytes ? gpu->vbios[at] : 0;

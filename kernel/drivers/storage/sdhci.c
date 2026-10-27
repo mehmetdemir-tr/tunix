@@ -8,8 +8,7 @@
 #include <tunix/iowait.h>
 #include <tunix/lock.h>
 #include <tunix/mutex.h>
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define REG_BLOCK         0x04U
 #define REG_ARGUMENT      0x08U

@@ -7,8 +7,7 @@
 #include <tunix/time.h>
 #include <tunix/virtio.h>
 #include <tunix/vmm.h>
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define SUBMIT_TIMEOUT_NS (2ULL * 1000ULL * 1000ULL * 1000ULL)
 

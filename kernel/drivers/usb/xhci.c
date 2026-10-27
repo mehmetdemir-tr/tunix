@@ -19,8 +19,7 @@
 #include <tunix/mutex.h>
 #include <tunix/process.h>
 #include <tunix/workqueue.h>
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define PCI_CLASS_SERIAL_BUS 0x0CU
 #define PCI_SUBCLASS_USB     0x03U

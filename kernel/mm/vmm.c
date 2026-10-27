@@ -14,14 +14,13 @@ static uint64_t map_device_locked(uint64_t physical, uint64_t bytes, uint64_t ca
 #include <tunix/smp.h>
 #include <tunix/vmm.h>
 #include <tunix/vmm_arch.h>
+#include <tunix/kprintf.h>
 
 #define ADDRESS_MASK     PTE_ADDRESS_MASK
 #define KERNEL_HALF_BASE 0xFFFF800000000000ULL
 
 static int kernel_mapping(uint64_t virtual_address) { return virtual_address >= KERNEL_HALF_BASE; }
 
-extern void panic(const char *msg) __attribute__((noreturn));
-extern void kprintf(const char *fmt, ...);
 extern int process_commit_area(uint64_t fault_address);
 extern int process_grow_user_stack(uint64_t fault_address);
 

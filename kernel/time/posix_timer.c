@@ -9,11 +9,7 @@
 #include <tunix/smp.h>
 #include <tunix/time.h>
 #include <tunix/timer.h>
-
-#define EINVAL     22
-#define ENOMEM     12
-#define EAGAIN     11
-#define EOPNOTSUPP 95
+#include <tunix/errno.h>
 
 #define CPUCLOCK_PERTHREAD 4U
 #define CPUCLOCK_KIND_MASK 3U

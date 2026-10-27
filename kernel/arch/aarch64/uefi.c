@@ -6,8 +6,7 @@
 #include <tunix/time.h>
 #include <tunix/vmm.h>
 #include "aarch64.h"
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define DESC_SH_INNER  (3ULL << 8)
 #define DESC_AF        (1ULL << 10)

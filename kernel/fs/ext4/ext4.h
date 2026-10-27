@@ -7,10 +7,10 @@
 #include <tunix/build_config.h>
 #include <tunix/mutex.h>
 #include <tunix/vfs.h>
+#include <tunix/kprintf.h>
+#include <tunix/errno.h>
 
 struct jbd2_journal;
-
-extern void kprintf(const char *fmt, ...);
 
 #if TUNIX_DEBUG_LOGS
 #define KDEBUG(...) kprintf(__VA_ARGS__)
@@ -19,20 +19,6 @@ extern void kprintf(const char *fmt, ...);
     do { \
     } while (0)
 #endif
-
-#define EPERM      1
-#define ENOENT     2
-#define EIO        5
-#define ENOMEM     12
-#define EBUSY      16
-#define EEXIST     17
-#define ENODEV     19
-#define EINVAL     22
-#define ENOSPC     28
-#define EROFS      30
-#define ERANGE     34
-#define ENODATA    61
-#define EOPNOTSUPP 95
 
 #define EXT4_SUPER_MAGIC         0xEF53U
 #define EXT4_MIN_BLOCK_SIZE      1024U

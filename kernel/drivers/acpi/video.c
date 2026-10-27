@@ -12,8 +12,7 @@
 #include "priv.h"
 
 #include <uapi/input_event.h>
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define NOTIFY_BRIGHTNESS_UP   0x86U
 #define NOTIFY_BRIGHTNESS_DOWN 0x87U

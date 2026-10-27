@@ -16,8 +16,7 @@
 #include <tunix/time.h>
 #include <tunix/timer.h>
 #include <tunix/vmm.h>
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 extern uint8_t smp_trampoline_start[];
 extern uint8_t smp_trampoline_end[];

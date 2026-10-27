@@ -14,13 +14,12 @@
 #include <tunix/workqueue.h>
 
 #include "priv.h"
+#include <tunix/kprintf.h>
 
 #define PCI_VENDOR_NVIDIA 0x10DEU
 #define PCI_CLASS_DISPLAY 0x03U
 #define NV_BAR0_BYTES     0x1000000ULL
 #define VRAM_SIZE_REG     0x10020CU
-
-extern void kprintf(const char *fmt, ...);
 
 #define BUFFER_ALIGN    0x100000U
 #define BACKLIGHT_SCALE 100U

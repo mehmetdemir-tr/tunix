@@ -6,8 +6,7 @@
 #include <tunix/kstring.h>
 #include <tunix/vmm.h>
 #include "aarch64.h"
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define GITS_CTLR       0x0000U
 #define GITS_TYPER      0x0008U

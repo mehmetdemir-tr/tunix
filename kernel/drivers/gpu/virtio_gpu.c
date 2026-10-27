@@ -13,6 +13,7 @@
 #include <tunix/percpu.h>
 #include <tunix/process.h>
 #include <tunix/workqueue.h>
+#include <tunix/kprintf.h>
 
 static struct lock virtgpu_lock = LOCK_INITIALIZER("virtio-gpu", LOCK_RANK_DEVICE);
 
@@ -24,8 +25,6 @@ static void virtgpu_guard_release(int *unused) {
 #define VIRTGPU_LOCKED \
     __attribute__((cleanup(virtgpu_guard_release))) int virtgpu_guard = \
         (lock_acquire(&virtgpu_lock), 0)
-
-extern void kprintf(const char *fmt, ...);
 
 #define VIRTIO_GPU_DEVICE_ID         0x1050U
 #define VIRTIO_GPU_CONTROL_QUEUE     0U

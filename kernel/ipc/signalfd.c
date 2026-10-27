@@ -4,9 +4,7 @@
 #include <tunix/kstring.h>
 #include <tunix/process.h>
 #include <tunix/signalfd.h>
-
-#define EAGAIN 11
-#define EINVAL 22
+#include <tunix/errno.h>
 
 struct signalfd_siginfo {
     uint32_t ssi_signo;

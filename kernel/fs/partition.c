@@ -3,8 +3,7 @@
 
 #include <tunix/block.h>
 #include <tunix/kstring.h>
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define MBR_SIGNATURE_OFFSET  0x1FEU
 #define MBR_TABLE_OFFSET      0x1BEU

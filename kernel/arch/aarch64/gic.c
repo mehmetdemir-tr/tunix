@@ -3,9 +3,7 @@
 #include <tunix/percpu.h>
 #include <tunix/vmm.h>
 #include "aarch64.h"
-
-extern void kprintf(const char *fmt, ...);
-extern void panic(const char *message) __attribute__((noreturn));
+#include <tunix/kprintf.h>
 
 #define GICD_CTLR       0x0000U
 #define GICD_TYPER      0x0004U

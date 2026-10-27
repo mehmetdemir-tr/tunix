@@ -7,8 +7,7 @@
 #include <tunix/process.h>
 #include <tunix/smp.h>
 #include <tunix/time.h>
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define MUTEX_REPORTS         16U
 #define OWNER_SPIN_NS         50000ULL

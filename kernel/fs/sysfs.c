@@ -16,6 +16,7 @@
 #include <tunix/thermal.h>
 #include <tunix/vt.h>
 #include <tunix/vfs.h>
+#include <tunix/errno.h>
 
 static void vfs_guard_release(int *unused) {
     (void)unused;
@@ -39,8 +40,6 @@ static void append_number(char *out, size_t limit, size_t *used, uint32_t value)
     }
     while (count-- > 0 && *used + 1 < limit) out[(*used)++] = digits[count];
 }
-
-#define EINVAL 22
 
 struct sysfs_device {
     char devpath[64];
@@ -99,9 +98,6 @@ static int uevent_action_known(const char *action) {
     return 0;
 }
 
-/* "ACTION [UUID [KEY=VALUE ...]]", as udevadm trigger writes it: the event
- * then carries SYNTH_UUID and a SYNTH_ARG_ for every argument, so that the
- * writer can tell its own events apart. */
 static int64_t uevent_write(struct vfs_node *node, uint64_t offset, size_t size,
                             const void *buffer) {
     VFS_GUARD;

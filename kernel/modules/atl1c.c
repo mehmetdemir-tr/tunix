@@ -9,8 +9,7 @@
 #include <tunix/time.h>
 #include <tunix/vmm.h>
 #include <tunix/net/net.h>
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define ATL1C_VENDOR 0x1969U
 #define ATL1C_AR8131 0x1063U

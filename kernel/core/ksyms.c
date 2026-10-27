@@ -14,9 +14,8 @@
 #include <tunix/net/net.h>
 #include <tunix/time.h>
 #include <tunix/vmm.h>
+#include <tunix/kprintf.h>
 
-extern void kprintf(const char *fmt, ...);
-extern void panic(const char *message);
 extern uint64_t __stack_chk_guard;
 extern void __stack_chk_fail(void);
 

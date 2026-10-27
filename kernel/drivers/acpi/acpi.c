@@ -10,8 +10,8 @@
 #include <tunix/pmm.h>
 #include <tunix/kstring.h>
 
-extern void kprintf(const char *fmt, ...);
 #include <tunix/boot.h>
+#include <tunix/kprintf.h>
 
 #define RSDP_SIGNATURE       "RSD PTR "
 #define RSDP_SIGNATURE_BYTES 8U

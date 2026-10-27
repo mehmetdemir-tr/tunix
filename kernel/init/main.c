@@ -34,9 +34,7 @@
 #include <tunix/smp.h>
 #include <tunix/virtgpu.h>
 #include <tunix/xhci.h>
-
-extern void kprintf(const char *fmt, ...);
-extern void panic(const char *message);
+#include <tunix/kprintf.h>
 
 #if TUNIX_BOOT_TIMINGS
 static void boot_log_cycles(const char *name, uint64_t cycles) {

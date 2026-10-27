@@ -4,6 +4,7 @@
 #include <tunix/inotify.h>
 #include <tunix/kstring.h>
 #include <tunix/lock.h>
+#include <tunix/errno.h>
 
 static struct lock inotify_lock = LOCK_INITIALIZER("inotify", LOCK_RANK_OBJECT);
 
@@ -16,9 +17,6 @@ static void inotify_guard_release(int *unused) {
     __attribute__((cleanup(inotify_guard_release))) int inotify_guard = \
         (lock_acquire(&inotify_lock), 0)
 
-#define EAGAIN            11
-#define EINVAL            22
-#define ENOSPC            28
 #define IN_IGNORED        0x00008000U
 #define IN_Q_OVERFLOW     0x00004000U
 #define INOTIFY_QUEUE_MIN 8192U

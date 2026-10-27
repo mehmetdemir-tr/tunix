@@ -7,11 +7,7 @@
 #include <tunix/posix_lock.h>
 #include <tunix/process.h>
 #include <tunix/vfs.h>
-
-#define EINTR   4
-#define EAGAIN  11
-#define EDEADLK 35
-#define ENOLCK  37
+#include <tunix/errno.h>
 
 #define DEADLOCK_SEARCH_DEPTH 10
 

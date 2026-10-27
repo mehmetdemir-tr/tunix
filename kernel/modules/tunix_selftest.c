@@ -5,8 +5,7 @@
 #include <tunix/kstring.h>
 #include <tunix/module.h>
 #include <tunix/time.h>
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define SELFTEST_ANSWER 0x5AD2C0DEBEEF0007ULL
 

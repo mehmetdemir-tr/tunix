@@ -11,17 +11,8 @@
 #include <tunix/vmm.h>
 #include <tunix/vmm_arch.h>
 #include <tunix/lock.h>
-
-extern void kprintf(const char *fmt, ...);
-
-#define ENOENT  2
-#define ENOEXEC 8
-#define EAGAIN  11
-#define ENOMEM  12
-#define EBUSY   16
-#define EEXIST  17
-#define EINVAL  22
-#define ENOSPC  28
+#include <tunix/kprintf.h>
+#include <tunix/errno.h>
 
 #define ELFCLASS64  2
 #define ELFDATA2LSB 1

@@ -11,8 +11,7 @@
 #include <tunix/iowait.h>
 #include <tunix/lock.h>
 #include <tunix/mutex.h>
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define NVME_CLASS    0x01U
 #define NVME_SUBCLASS 0x08U

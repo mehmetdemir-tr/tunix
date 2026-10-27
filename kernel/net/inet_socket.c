@@ -6,30 +6,8 @@
 #include <tunix/net/inet_socket.h>
 #include <tunix/eventfs.h>
 #include <tunix/net/net.h>
-
-extern void kprintf(const char *fmt, ...);
-
-#define EAGAIN          11
-#define ENOMEM          12
-#define EFAULT          14
-#define EINVAL          22
-#define ENOTTY          25
-#define EDESTADDRREQ    89
-#define EPROTONOSUPPORT 93
-#define EOPNOTSUPP      95
-#define EAFNOSUPPORT    97
-#define EADDRINUSE      98
-#define EADDRNOTAVAIL   99
-#define ENODEV          19
-#define ENETDOWN        100
-#define ENOTCONN        107
-#define EPIPE           32
-#define EMSGSIZE        90
-#define ECONNRESET      104
-#define EISCONN         106
-#define ETIMEDOUT       110
-#define ECONNREFUSED    111
-#define EINPROGRESS     115
+#include <tunix/kprintf.h>
+#include <tunix/errno.h>
 
 #define DATAGRAM_BUFFER_DEFAULT 212992U
 #define STREAM_BUFFER_DEFAULT   (256U << 10)

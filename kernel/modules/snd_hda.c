@@ -9,8 +9,7 @@
 #include <tunix/sound.h>
 #include <tunix/time.h>
 #include <tunix/vmm.h>
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define PCI_CLASS_MULTIMEDIA 0x04U
 #define PCI_SUBCLASS_HDA     0x03U

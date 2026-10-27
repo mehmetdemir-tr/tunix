@@ -9,6 +9,7 @@
 #include <tunix/time.h>
 #include <tunix/lock.h>
 #include <tunix/syscall.h>
+#include <tunix/errno.h>
 
 static struct lock shm_lock = LOCK_INITIALIZER("sysv shm", LOCK_RANK_OBJECT);
 
@@ -21,13 +22,6 @@ static void shm_guard_release(int *unused) {
     __attribute__((cleanup(shm_guard_release))) int shm_guard = (lock_acquire(&shm_lock), 0)
 
 #define SHM_MAX_BYTES 0x00007FFFFFFFFFFFULL
-
-#define EPERM  1
-#define ENOENT 2
-#define EINVAL 22
-#define ENOSPC 28
-#define EEXIST 17
-#define ENOMEM 12
 
 struct shm_segment {
     int used;

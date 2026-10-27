@@ -15,18 +15,8 @@
 #include <tunix/vfs.h>
 #include <tunix/vmm.h>
 #include <uapi/asound.h>
-
-extern void kprintf(const char *fmt, ...);
-
-#define EIO    5
-#define ENXIO  6
-#define EAGAIN 11
-#define EFAULT 14
-#define EBUSY  16
-#define EINVAL 22
-#define ENOTTY 25
-#define EPIPE  32
-#define EBADFD 77
+#include <tunix/kprintf.h>
+#include <tunix/errno.h>
 
 #define RING_PAGES         64U
 #define RING_BYTES         (RING_PAGES * 4096U)

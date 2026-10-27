@@ -6,8 +6,7 @@
 #include <tunix/kstring.h>
 #include <tunix/percpu.h>
 #include <tunix/time.h>
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define MSR_SMI_COUNT     0x34U
 #define MSR_PLATFORM_INFO 0xCEU

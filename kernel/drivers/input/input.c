@@ -2,7 +2,6 @@
 #include <stdint.h>
 #include <tunix/cpu.h>
 #include <tunix/heap.h>
-extern void kprintf(const char *fmt, ...);
 #include <tunix/boot.h>
 #include <tunix/input.h>
 #if defined(__x86_64__)
@@ -19,6 +18,8 @@ extern void kprintf(const char *fmt, ...);
 #include <uapi/input_event.h>
 #include <tunix/lock.h>
 #include <tunix/usb_storage.h>
+#include <tunix/kprintf.h>
+#include <tunix/errno.h>
 
 static struct lock input_lock = LOCK_INITIALIZER("input", LOCK_RANK_INPUT);
 
@@ -29,12 +30,6 @@ static void input_guard_release(int *unused) {
 
 #define INPUT_LOCKED \
     __attribute__((cleanup(input_guard_release))) int input_guard = (lock_acquire(&input_lock), 0)
-
-#define EAGAIN 11
-#define EINVAL 22
-#define EFAULT 14
-#define ENOENT 2
-#define ENOTTY 25
 
 #define input_copy_to_user   copy_to_user
 #define input_copy_from_user copy_from_user

@@ -6,6 +6,8 @@
 #include <tunix/kstring.h>
 #include <tunix/time.h>
 #include <tunix/vfs.h>
+#include <tunix/kprintf.h>
+#include <tunix/errno.h>
 
 static void vfs_guard_release(int *unused) {
     (void)unused;
@@ -14,14 +16,6 @@ static void vfs_guard_release(int *unused) {
 
 #define VFS_GUARD \
     __attribute__((cleanup(vfs_guard_release))) int vfs_guard = (vfs_lock_acquire(), 0)
-
-extern void kprintf(const char *fmt, ...);
-
-#define EINVAL 22
-#define ENODEV 19
-#define ENOMEM 12
-#define EIO    5
-#define ENOSPC 28
 
 #define FAT_ATTR_READ_ONLY 0x01U
 #define FAT_ATTR_HIDDEN    0x02U

@@ -3,8 +3,7 @@
 
 #include <tunix/serial.h>
 #include "aarch64.h"
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define HEADER_BYTES 36U
 #define MAX_TABLES   64U

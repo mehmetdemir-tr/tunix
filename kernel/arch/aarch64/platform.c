@@ -6,8 +6,7 @@
 #include <tunix/serial.h>
 #include <tunix/vmm.h>
 #include "aarch64.h"
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define PSCI_SYSTEM_OFF   0x84000008ULL
 #define PSCI_SYSTEM_RESET 0x84000009ULL

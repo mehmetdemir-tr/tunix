@@ -10,6 +10,7 @@
 #include <tunix/terminal.h>
 #include <tunix/vt.h>
 #include <uapi/input_event.h>
+#include <tunix/errno.h>
 
 struct mutex tty_lock = MUTEX_INITIALIZER("tty", LOCK_RANK_TTY);
 
@@ -19,8 +20,6 @@ int tty_poll_lock(void) {
     return 1;
 }
 
-#define EINTR                  4
-#define EAGAIN                 11
 #define TTY_INPUT_CAPACITY     1024
 #define TTY_CANONICAL_CAPACITY 1024
 #define ANSI_PARAM_MAX         16

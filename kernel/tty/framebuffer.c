@@ -11,21 +11,13 @@
 
 #include <uapi/framebuffer.h>
 #include <tunix/lock.h>
+#include <tunix/kprintf.h>
+#include <tunix/errno.h>
 
 static struct lock graphics_lock = LOCK_INITIALIZER("graphics owner", LOCK_RANK_LEAF);
 
-extern void kprintf(const char *fmt, ...);
-
 #define FRAMEBUFFER_VIRTUAL_BASE 0xFFFFFFFFF0000000ULL
 #define FRAMEBUFFER_WINDOW_BYTES (DEVICE_MMIO_VIRTUAL_BASE - FRAMEBUFFER_VIRTUAL_BASE)
-
-#define EACCES 13
-#define EBUSY  16
-#define EFAULT 14
-#define EINVAL 22
-#define ENODEV 19
-#define ENOTTY 25
-#define EPERM  1
 
 struct framebuffer_state {
     volatile uint8_t *base;

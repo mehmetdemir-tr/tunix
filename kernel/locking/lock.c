@@ -5,8 +5,7 @@
 #include <tunix/percpu.h>
 #include <tunix/smp.h>
 #include <tunix/time.h>
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define HELD_MAX         24U
 #define ORDER_REPORTS    16U

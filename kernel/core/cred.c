@@ -6,15 +6,7 @@
 #include <tunix/kstring.h>
 #include <tunix/process.h>
 #include <tunix/vfs.h>
-
-#define EPERM        1
-#define ENOENT       2
-#define ENOTDIR      20
-#define EACCES       13
-#define EINVAL       22
-#define EROFS        30
-#define ENOMEM       12
-#define ENAMETOOLONG 36
+#include <tunix/errno.h>
 
 #define MODE_SETUID 04000U
 #define MODE_SETGID 02000U

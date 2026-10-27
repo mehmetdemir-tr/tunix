@@ -9,8 +9,7 @@
 #include <tunix/net/net.h>
 #include <tunix/net/virtio_net.h>
 #include <tunix/workqueue.h>
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
 
 #define ETHERTYPE_IPV4 0x0800U
 #define ETHERTYPE_ARP  0x0806U

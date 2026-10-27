@@ -6,6 +6,7 @@
 
 #include <tunix/boot.h>
 #include <tunix/boot_framebuffer.h>
+#include <tunix/kprintf.h>
 
 __attribute__((used, section(".limine_requests"))) static volatile LIMINE_BASE_REVISION(3);
 
@@ -74,7 +75,6 @@ extern uint8_t kernel_reserve_end[];
 
 extern void kmain(const struct boot_info *boot);
 extern void stack_guard_init(void);
-extern void panic(const char *message);
 
 static struct boot_memory_region memory_regions[BOOT_MEMORY_REGIONS];
 static struct boot_framebuffer_info framebuffer_info;

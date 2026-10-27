@@ -52,8 +52,8 @@
 #include <tunix/drm.h>
 #include <tunix/net/netlink.h>
 #include <tunix/net/net.h>
-
-extern void kprintf(const char *fmt, ...);
+#include <tunix/kprintf.h>
+#include <tunix/errno.h>
 
 #if TUNIX_DEBUG_LOGS
 #define KDEBUG(...) kprintf(__VA_ARGS__)
@@ -525,56 +525,6 @@ struct linux_clone_args {
 #define PR_CAP_AMBIENT_RAISE     2
 #define PR_CAP_AMBIENT_LOWER     3
 #define PR_CAP_AMBIENT_CLEAR_ALL 4
-
-#define EPERM           1
-#define E2BIG           7
-#define ENOEXEC         8
-#define ENOENT          2
-#define ESRCH           3
-#define EINTR           4
-#define EIO             5
-#define ENXIO           6
-#define EBADF           9
-#define ECHILD          10
-#define EAGAIN          11
-#define ENOMEM          12
-#define EACCES          13
-#define EFAULT          14
-#define EBUSY           16
-#define EEXIST          17
-#define ENODEV          19
-#define ENOTDIR         20
-#define EISDIR          21
-#define EINVAL          22
-#define EMFILE          24
-#define ENOTTY          25
-#define ESPIPE          29
-#define EROFS           30
-#define EPIPE           32
-#define ENOSYS          38
-#define ENOTEMPTY       39
-#define ELOOP           40
-#define ENOPROTOOPT     92
-#define EOPNOTSUPP      95
-#define ENODATA         61
-#define ENOSPC          28
-#define EFBIG           27
-#define ENAMETOOLONG    36
-#define ERANGE          34
-#define ETIMEDOUT       110
-#define EMSGSIZE        90
-#define EPROTONOSUPPORT 93
-#define EAFNOSUPPORT    97
-#define EADDRINUSE      98
-#define EADDRNOTAVAIL   99
-#define ENETDOWN        100
-#define ENOTCONN        107
-#define EDESTADDRREQ    89
-#define ENOTSOCK        88
-#define EINPROGRESS     115
-#define ECONNREFUSED    111
-#define EOVERFLOW       75
-#define ERESTARTSYS     512
 
 #define FUTEX_WAIT 0
 #define FUTEX_WAKE 1
@@ -5877,10 +5827,6 @@ MEMORY_SYSCALL(munlock, (uint64_t a, uint64_t b), (a, b))
 MEMORY_SYSCALL(shmat, (int a, uint64_t b, int c), (a, b, c))
 MEMORY_SYSCALL(shmdt, (uint64_t a), (a))
 MEMORY_SYSCALL(brk, (uint64_t a), (a))
-
-#define ETIME    62
-#define EISCONN  106
-#define EALREADY 114
 
 #define IORING_ENTER_GETEVENTS       (1U << 0)
 #define IORING_ENTER_SQ_WAKEUP       (1U << 1)
