@@ -127,6 +127,8 @@ typedef unsigned char u8;
 #define MAP_SHARED    0x01
 #define MAP_PRIVATE   0x02
 #define MAP_ANONYMOUS 0x20
+#define MAP_FIXED     0x10
+#define PROT_NONE     0
 
 #define SIGKILL 9
 #define SIGUSR1 10

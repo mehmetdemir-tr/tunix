@@ -57,6 +57,11 @@ struct vm_area {
     struct file *file;
     uint64_t offset;
     struct vm_area *next;
+    struct vm_area *prev;
+    struct vm_area *left;
+    struct vm_area *right;
+    struct vm_area *parent;
+    uint32_t priority;
 };
 
 struct process_memory {
@@ -67,6 +72,7 @@ struct process_memory {
     uint64_t brk_end;
     uint64_t mmap_base;
     struct vm_area *areas;
+    struct vm_area *area_root;
     struct process_memory *release_next;
 };
 

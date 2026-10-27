@@ -2087,8 +2087,8 @@ void process_start_first(void) { go_idle(); }
 
 void process_run_idle(void) { cpu_idle_park(cpu_current()->idle_stack_top); }
 
-static struct vm_area **area_list(void) {
-    return current && current->memory ? &current->memory->areas : NULL;
+static struct process_memory *area_owner(void) {
+    return current && current->memory ? current->memory : NULL;
 }
 
 static int area_writes_file(const struct vm_area *area) {
@@ -2099,13 +2099,14 @@ static struct vm_area *area_alloc(uint64_t start, uint64_t end, uint64_t page_fl
                                   struct file *file, uint64_t offset) {
     struct vm_area *area = (struct vm_area *)kmalloc(sizeof(*area));
     if (!area) return NULL;
+    memset(area, 0, sizeof(*area));
     area->start = start;
     area->end = end;
     area->page_flags = page_flags;
     area->kind = kind;
     area->file = file;
     area->offset = offset;
-    area->next = NULL;
+    area->priority = (uint32_t)(((uint64_t)(uintptr_t)area >> 4) * 0x9E3779B97F4A7C15ULL >> 32);
     if (file) file_ref(file);
     if ((kind & VM_FILE_PAGES) && file) {
         vfs_map_ref(file->node);
@@ -2124,107 +2125,171 @@ static void area_free(struct vm_area *area) {
     kfree(area);
 }
 
-static struct vm_area *area_split_at(struct vm_area *area, uint64_t cut) {
+static void area_rotate_up(struct process_memory *memory, struct vm_area *node) {
+    struct vm_area *parent = node->parent;
+    struct vm_area *grand = parent->parent;
+    if (parent->left == node) {
+        parent->left = node->right;
+        if (node->right) node->right->parent = parent;
+        node->right = parent;
+    } else {
+        parent->right = node->left;
+        if (node->left) node->left->parent = parent;
+        node->left = parent;
+    }
+    parent->parent = node;
+    node->parent = grand;
+    if (!grand) memory->area_root = node;
+    else if (grand->left == parent) grand->left = node;
+    else grand->right = node;
+}
+
+static struct vm_area *area_at_or_before(const struct process_memory *memory, uint64_t address) {
+    struct vm_area *best = NULL;
+    for (struct vm_area *node = memory->area_root; node;) {
+        if (node->start <= address) {
+            best = node;
+            node = node->right;
+        } else {
+            node = node->left;
+        }
+    }
+    return best;
+}
+
+static struct vm_area *area_first_ending_after(const struct process_memory *memory,
+                                               uint64_t address) {
+    struct vm_area *area = area_at_or_before(memory, address);
+    if (!area) return memory->areas;
+    return area->end > address ? area : area->next;
+}
+
+static void area_insert(struct process_memory *memory, struct vm_area *area) {
+    struct vm_area *parent = NULL;
+    struct vm_area **link = &memory->area_root;
+    while (*link) {
+        parent = *link;
+        link = area->start < parent->start ? &parent->left : &parent->right;
+    }
+    area->left = area->right = NULL;
+    area->parent = parent;
+    *link = area;
+    while (area->parent && area->priority < area->parent->priority) area_rotate_up(memory, area);
+
+    struct vm_area *before = area_at_or_before(memory, area->start - 1);
+    if (area->start == 0) before = NULL;
+    area->prev = before;
+    area->next = before ? before->next : memory->areas;
+    if (area->next) area->next->prev = area;
+    if (before) before->next = area;
+    else memory->areas = area;
+}
+
+static void area_remove(struct process_memory *memory, struct vm_area *area) {
+    while (area->left || area->right) {
+        struct vm_area *child = !area->left                ? area->right
+            : !area->right                                 ? area->left
+            : area->left->priority < area->right->priority ? area->left
+                                                           : area->right;
+        area_rotate_up(memory, child);
+    }
+    struct vm_area *parent = area->parent;
+    if (!parent) memory->area_root = NULL;
+    else if (parent->left == area) parent->left = NULL;
+    else parent->right = NULL;
+    area->parent = NULL;
+
+    if (area->prev) area->prev->next = area->next;
+    else memory->areas = area->next;
+    if (area->next) area->next->prev = area->prev;
+    area->next = area->prev = NULL;
+}
+
+static struct vm_area *area_split_at(struct process_memory *memory, struct vm_area *area,
+                                     uint64_t cut) {
     struct vm_area *tail = area_alloc(cut, area->end, area->page_flags, area->kind, area->file,
                                       area->offset + (cut - area->start));
     if (!tail) return NULL;
     area->end = cut;
-    tail->next = area->next;
-    area->next = tail;
+    area_insert(memory, tail);
     return tail;
-}
-
-static void area_insert(struct vm_area **list, struct vm_area *area) {
-    struct vm_area **link = list;
-    while (*link && (*link)->start < area->start) link = &(*link)->next;
-    area->next = *link;
-    *link = area;
 }
 
 int process_map_area(uint64_t start, uint64_t end, uint64_t page_flags, uint32_t kind,
                      struct file *file, uint64_t offset) {
     MEMORY_LOCKED;
-    struct vm_area **list = area_list();
-    if (!list || start >= end) return -1;
+    struct process_memory *memory = area_owner();
+    if (!memory || start >= end) return -1;
     process_unmap_area(start, end);
     struct vm_area *area = area_alloc(start, end, page_flags, kind, file, offset);
     if (!area) return -1;
-    area_insert(list, area);
+    area_insert(memory, area);
     return 0;
 }
 
 void process_unmap_area(uint64_t start, uint64_t end) {
     MEMORY_LOCKED;
-    struct vm_area **list = area_list();
-    if (!list || start >= end) return;
+    struct process_memory *memory = area_owner();
+    if (!memory || start >= end) return;
 
-    struct vm_area **link = list;
-    while (*link) {
-        struct vm_area *area = *link;
-        if (area->end <= start || area->start >= end) {
-            link = &area->next;
-            continue;
-        }
+    struct vm_area *area = area_first_ending_after(memory, start);
+    while (area && area->start < end) {
+        struct vm_area *next = area->next;
         if (start <= area->start && end >= area->end) {
-            *link = area->next;
+            area_remove(memory, area);
             area_free(area);
-            continue;
-        }
-        if (start > area->start && end < area->end) {
-            struct vm_area *tail = area_split_at(area, end);
+        } else if (start > area->start && end < area->end) {
+            (void)area_split_at(memory, area, end);
             area->end = start;
-            link = tail ? &tail->next : &area->next;
-            continue;
-        }
-        if (start > area->start) {
+            break;
+        } else if (start > area->start) {
             area->end = start;
         } else {
             area->offset += end - area->start;
             area->start = end;
         }
-        link = &area->next;
+        area = next;
     }
 }
 
 void process_protect_area(uint64_t start, uint64_t end, uint64_t page_flags) {
     MEMORY_LOCKED;
-    struct vm_area **list = area_list();
-    if (!list || start >= end) return;
+    struct process_memory *memory = area_owner();
+    if (!memory || start >= end) return;
 
-    struct vm_area **link = list;
-    while (*link) {
-        struct vm_area *area = *link;
-        if (area->end <= start || area->start >= end) {
-            link = &area->next;
-            continue;
-        }
+    struct vm_area *area = area_first_ending_after(memory, start);
+    while (area && area->start < end) {
         if (area->start < start || area->end > end) {
             uint64_t cut = area->start < start ? start : end;
-            if (!area_split_at(area, cut)) { link = &area->next; }
-            continue;
+            struct vm_area *tail = area_split_at(memory, area, cut);
+            if (!tail) {
+                area = area->next;
+                continue;
+            }
+            if (area->start < start) {
+                area = tail;
+                continue;
+            }
         }
         area->page_flags = page_flags;
-        link = &area->next;
+        area = area->next;
     }
 }
 
 int process_area_range_free(uint64_t start, uint64_t end) {
     MEMORY_LOCKED;
-    struct vm_area **list = area_list();
-    if (!list || start >= end) return 0;
-    for (struct vm_area *area = *list; area; area = area->next) {
-        if (area->start >= end) break;
-        if (area->end > start) return 0;
-    }
-    return 1;
+    struct process_memory *memory = area_owner();
+    if (!memory || start >= end) return 0;
+    struct vm_area *area = area_first_ending_after(memory, start);
+    return !area || area->start >= end;
 }
 
 int process_find_free_range(uint64_t start, uint64_t length, uint64_t *base_out) {
     MEMORY_LOCKED;
-    struct vm_area **list = area_list();
-    if (!list || !length || !base_out) return -1;
+    struct process_memory *memory = area_owner();
+    if (!memory || !length || !base_out) return -1;
     uint64_t base = start;
-    for (struct vm_area *area = *list; area; area = area->next) {
+    for (struct vm_area *area = area_first_ending_after(memory, base); area; area = area->next) {
         if (area->end <= base) continue;
         if (area->start >= base && area->start - base >= length) break;
         base = area->end;
@@ -2237,12 +2302,11 @@ int process_find_free_range(uint64_t start, uint64_t length, uint64_t *base_out)
 
 int process_sync_file_areas(uint64_t start, uint64_t end) {
     MEMORY_LOCKED;
-    struct vm_area **list = area_list();
-    if (!list) return 0;
+    struct process_memory *memory = area_owner();
+    if (!memory) return 0;
     int covered = 0;
-    for (struct vm_area *area = *list; area; area = area->next) {
-        if (area->start >= end) break;
-        if (area->end <= start) continue;
+    for (struct vm_area *area = area_first_ending_after(memory, start); area && area->start < end;
+         area = area->next) {
         covered = 1;
         if ((area->kind & VM_FILE_PAGES) && area->file && area_writes_file(area))
             vfs_flush_mapped(area->file->node);
@@ -2252,13 +2316,10 @@ int process_sync_file_areas(uint64_t start, uint64_t end) {
 
 struct vm_area *process_find_area(uint64_t address) {
     MEMORY_LOCKED;
-    struct vm_area **list = area_list();
-    if (!list) return NULL;
-    for (struct vm_area *area = *list; area; area = area->next) {
-        if (address < area->start) return NULL;
-        if (address < area->end) return area;
-    }
-    return NULL;
+    struct process_memory *memory = area_owner();
+    if (!memory) return NULL;
+    struct vm_area *area = area_at_or_before(memory, address);
+    return area && address < area->end ? area : NULL;
 }
 
 static int reclaim_or_kill(void) {
@@ -2383,10 +2444,10 @@ static void areas_free(struct process_memory *memory) {
         area = next;
     }
     memory->areas = NULL;
+    memory->area_root = NULL;
 }
 
 static int areas_copy(struct process_memory *destination, const struct process_memory *source) {
-    struct vm_area **link = &destination->areas;
     for (const struct vm_area *area = source->areas; area; area = area->next) {
         struct vm_area *copy = area_alloc(area->start, area->end, area->page_flags, area->kind,
                                           area->file, area->offset);
@@ -2394,8 +2455,7 @@ static int areas_copy(struct process_memory *destination, const struct process_m
             areas_free(destination);
             return -1;
         }
-        *link = copy;
-        link = &copy->next;
+        area_insert(destination, copy);
     }
     return 0;
 }

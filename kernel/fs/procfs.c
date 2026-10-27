@@ -939,15 +939,14 @@ static int64_t proc_pid_maps_read(struct vfs_node *node, uint64_t offset, size_t
     size_t produced = 0;
     uint64_t position = 0;
 
-    struct vm_area heap = {
-        memory->brk_start, memory->brk_end, PAGE_WRITE | PAGE_NX, VM_ANONYMOUS, NULL, 0, NULL};
-    struct vm_area stack = {process_stack_floor(process),
-                            USER_STACK_TOP,
-                            PAGE_WRITE | PAGE_NX,
-                            VM_ANONYMOUS,
-                            NULL,
-                            0,
-                            NULL};
+    struct vm_area heap = {.start = memory->brk_start,
+                           .end = memory->brk_end,
+                           .page_flags = PAGE_WRITE | PAGE_NX,
+                           .kind = VM_ANONYMOUS};
+    struct vm_area stack = {.start = process_stack_floor(process),
+                            .end = USER_STACK_TOP,
+                            .page_flags = PAGE_WRITE | PAGE_NX,
+                            .kind = VM_ANONYMOUS};
 
     VFS_PATH_SCOPED path = vfs_path_buffer();
     for (int step = 0; step < 3 && produced < size; step++) {
