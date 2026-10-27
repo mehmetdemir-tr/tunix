@@ -12,8 +12,8 @@ CARGO           := env $(RUST_ENV) $(RUST_HOME)/cargo/bin/cargo
 RUST_SOURCES     = $(shell find rust -name '*.rs' -o -name '*.toml' -o -name 'Cargo.lock' -o -name '*.c')
 RUST_X86_TARGET := x86_64-unknown-none
 RUST_ARM_TARGET := aarch64-unknown-none-softfloat
-RUST_X86_LIB    := $(BUILD)/rust-target/$(RUST_X86_TARGET)/release/libtunix_elf.a
-RUST_ARM_LIB    := $(BUILD)/rust-target/$(RUST_ARM_TARGET)/release/libtunix_elf.a
+RUST_X86_LIB    := $(BUILD)/rust-target/$(RUST_X86_TARGET)/release/libtunix_rust.a
+RUST_ARM_LIB    := $(BUILD)/rust-target/$(RUST_ARM_TARGET)/release/libtunix_rust.a
 
 $(RUST_STAMP):
 	rm -rf $(RUST_HOME)
@@ -45,11 +45,15 @@ RUST_FUZZ_SEED ?= 1
 
 .PHONY: rust-test rust-lint rust-format rust-format-check
 rust-test: | $(RUST_STAMP)
-	cd rust && $(CARGO) test --locked --workspace
+	cd rust && $(CARGO) test --locked --workspace --exclude tunix-lz4-check
 	cd rust && env TUNIX_ELF_CORPUS='$(RUST_TEST_CORPUS)' \
 		TUNIX_ELF_CORPUS_MINIMUM=$(RUST_TEST_CORPUS_MINIMUM) \
 		TUNIX_ELF_FUZZ_ITERATIONS=$(RUST_FUZZ_ITERATIONS) TUNIX_ELF_FUZZ_SEED=$(RUST_FUZZ_SEED) \
 		$(CARGO) test --locked --release -p tunix-elf-check -- --nocapture
+	cd rust && env TUNIX_LZ4_CORPUS='$(RUST_TEST_CORPUS)' \
+		TUNIX_LZ4_CORPUS_MINIMUM=$(RUST_TEST_CORPUS_MINIMUM) \
+		TUNIX_LZ4_FUZZ_ITERATIONS=$(RUST_FUZZ_ITERATIONS) TUNIX_LZ4_FUZZ_SEED=$(RUST_FUZZ_SEED) \
+		$(CARGO) test --locked --release -p tunix-lz4-check -- --nocapture
 
 rust-lint: | $(RUST_STAMP)
 	cd rust && $(CARGO) clippy --locked --workspace --all-targets -- -D warnings

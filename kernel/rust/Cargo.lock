@@ -12,3 +12,22 @@ version = "0.1.0"
 dependencies = [
  "tunix-elf",
 ]
+
+[[package]]
+name = "tunix-lz4"
+version = "0.1.0"
+
+[[package]]
+name = "tunix-lz4-check"
+version = "0.1.0"
+dependencies = [
+ "tunix-lz4",
+]
+
+[[package]]
+name = "tunix-rust"
+version = "0.1.0"
+dependencies = [
+ "tunix-elf",
+ "tunix-lz4",
+]

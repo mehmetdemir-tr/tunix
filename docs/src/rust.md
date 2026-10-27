@@ -2,9 +2,11 @@
 
 Rust in this kernel is kept to code that reads what someone else wrote: input
 that arrives from a file, a disk or a device and decides what the kernel then
-does with memory. The first such piece is the ELF loader's parser. Everything
-that maps pages, takes locks or touches `struct process` stays in C; Rust gets
-bytes and hands back a plan.
+does with memory. The first such piece is the ELF loader's parser; the second
+is the LZ4 codec that zram stores swapped pages with, whose decoder reads back
+bytes the kernel must not trust blindly. Everything that maps pages, takes
+locks or touches `struct process` stays in C; Rust gets bytes and hands back a
+plan or a buffer.
 
 ## Layout
 
@@ -13,14 +15,23 @@ kernel/rust/
   rust-toolchain.toml   the pinned compiler, its targets and components
   Cargo.toml            the workspace and the release profile
   .cargo/config.toml    code model flags for the x86-64 kernel
-  elf/                  tunix-elf: the parser, linked into the kernel
+  kernel/               tunix-rust: the one static library the kernel links
+  elf/                  tunix-elf: the ELF parser
   elf-check/            host-only tests against the C loader it replaced
+  lz4/                  tunix-lz4: the LZ4 block codec
+  lz4-check/            host-only tests against the system liblz4
 kernel/subprojects/rust/RECIPE
 ```
 
-`tunix-elf` builds as a static library for `x86_64-unknown-none` and
+`tunix-rust` builds as a static library for `x86_64-unknown-none` and
 `aarch64-unknown-none-softfloat` and is linked into `kernel.elf` and the arm64
-image. Its C face is `kernel/include/tunix/elf_plan.h`:
+image. It holds the panic handler and pulls in the other crates, which are
+plain Rust libraries: two static libraries would each carry their own copy of
+`core` and clash at link time.
+
+## The ELF parser
+
+`tunix-elf`'s C face is `kernel/include/tunix/elf_plan.h`:
 
 - `tunix_elf_header_span()` checks the ELF header and says how many bytes of
   headers to read: the program header table, at most 64 KiB, inside the file.
@@ -33,6 +44,18 @@ image. Its C face is `kernel/include/tunix/elf_plan.h`:
 `kernel/core/elf.c` reads the headers, asks for the plan, then maps, copies and
 protects exactly what the plan lists and builds the initial stack. It never
 reads a program header itself.
+
+## The LZ4 codec
+
+`tunix-lz4` implements the LZ4 block format (no frame headers) for inputs up
+to 64 KiB. Its C face is `kernel/include/tunix/lz4.h`:
+
+- `tunix_lz4_compress()` takes the caller's 4096-entry hash table, so the
+  kernel stack never holds it, and returns the compressed size or 0 when the
+  result does not fit the output buffer.
+- `tunix_lz4_decompress()` must produce exactly the expected number of bytes;
+  any stream that is truncated, points before the start of the output, uses
+  the reserved zero offset or ends with a match is refused.
 
 ## The toolchain
 
@@ -88,7 +111,15 @@ replaced, unchanged -- and compares the two:
   and inside user space, file ranges inside the file, the entry point inside a
   loaded page, the program headers inside a loaded segment.
 
-The one intended difference: the old loader let an entry point overflow past
+`lz4-check` links the system liblz4 and checks, for every page of the files
+under `RUST_TEST_CORPUS` and for synthetic pages: our output decodes with
+liblz4, liblz4's output decodes with ours, and both give back the input. It
+then feeds `RUST_FUZZ_ITERATIONS` mutated streams to both decoders, which must
+accept and reject the same streams and produce the same bytes. The one
+intended difference is the zero offset: the LZ4 format calls it corrupt and
+the kernel refuses it, while liblz4 accepts it; the test counts those apart.
+
+For the ELF parser, the one intended difference: the old loader let an entry point overflow past
 the top of the address space and wrap around into a mapping; the new one
 refuses. No real binary does this, and the test fails if one in the corpus
 does. A preferred base that is not page aligned is also refused; the kernel
@@ -96,8 +127,8 @@ only passes its two aligned constants.
 
 ## Adding a crate
 
-Put it under `kernel/rust/`, make it `no_std` on `target_os = "none"`, give it
-the same lint list, and expose `extern "C"` functions with `#[repr(C)]` types
-mirrored in a header with `_Static_assert`ed sizes. Link its static library
-where `tunix-elf`'s is linked. Keep it panic-free; the link check will say so
-otherwise.
+Put it under `kernel/rust/` as an `rlib`, make it `no_std` on
+`target_os = "none"`, give it the same lint list, and expose `extern "C"`
+functions with `#[repr(C)]` types mirrored in a header with `_Static_assert`ed
+sizes. Add it to `tunix-rust`'s dependencies and re-export its FFI module there.
+Keep it panic-free; the link check will say so otherwise.

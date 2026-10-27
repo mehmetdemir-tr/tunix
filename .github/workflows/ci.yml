@@ -56,7 +56,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-system-arm \
-            gcc-aarch64-linux-gnu mtools e2fsprogs fdisk
+            gcc-aarch64-linux-gnu mtools e2fsprogs fdisk liblz4-dev
 
       - name: enable kvm
         run: |

@@ -12,7 +12,7 @@
     clippy::unwrap_used
 )]
 
-mod ffi;
+pub mod ffi;
 
 pub const HEADER_SIZE: usize = 64;
 pub const PROGRAM_SIZE: usize = 56;

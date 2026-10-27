@@ -134,13 +134,3 @@ pub unsafe extern "C" fn tunix_elf_plan(
 pub unsafe extern "C" fn tunix_elf_interp_valid(path: *const u8, length: usize) -> i32 {
     i32::from(interp_path_valid(unsafe { bytes(path, length) }))
 }
-
-#[cfg(target_os = "none")]
-#[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
-    unsafe extern "C" {
-        #[link_name = "panic"]
-        fn kernel_panic(message: *const core::ffi::c_char) -> !;
-    }
-    unsafe { kernel_panic(c"rust: tunix-elf panicked".as_ptr()) }
-}
